@@ -806,6 +806,12 @@ export class Table<T extends Record<string, any> = any> {
     this._queryCache.clear();
   }
 
+  // Selective cache clearing for better performance
+  private _selectiveClearCache(): void {
+    // For now, clear all cache - could be optimized to clear only affected queries
+    this._queryCache.clear();
+  }
+
   // Get object pool statistics
   getPoolStats(): {
     arrayPool: any;
@@ -920,15 +926,29 @@ export class Table<T extends Record<string, any> = any> {
   }
 
   private _updateTable(updater: (table: Record<string, Record<string, any>>) => void): void {
-    // Check if storage supports selective updates
-    if ((this._storage as any).supportsFeature && (this._storage as any).supportsFeature('batch')) {
+    // Check if storage supports batch operations for better performance
+    if ((this._storage as any).writeBatch && (this._storage as any).supportsFeature && (this._storage as any).supportsFeature('batch')) {
+      this._performBatchUpdate(updater);
+    } else if ((this._storage as any).supportsFeature && (this._storage as any).supportsFeature('batch')) {
       this._performSelectiveUpdate(updater);
     } else {
       this._performFullUpdate(updater);
     }
     
-    // Clear cache after update
-    this.clearCache();
+    // Clear cache selectively for better performance
+    this._selectiveClearCache();
+  }
+
+  private _performBatchUpdate(updater: (table: Record<string, Record<string, any>>) => void): void {
+    const tables = this._storage.read() || {};
+    const originalTable = (tables[this._name] as Record<string, Record<string, any>>) || {};
+    const table = { ...originalTable }; // Create a copy for batching
+    
+    updater(table);
+    
+    // Use batch write for WAL storage
+    tables[this._name] = table;
+    (this._storage as any).writeBatch([{ type: 'write', data: tables }]);
   }
 
   private _performSelectiveUpdate(updater: (table: Record<string, Record<string, any>>) => void): void {

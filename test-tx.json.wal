@@ -1,3 +1,0 @@
-{"type":"begin","txid":101,"timestamp":1748116182366,"data":{}}
-{"type":"write","txid":101,"timestamp":1748116182355,"data":{"pending":"data"}}
-{"type":"commit","txid":101,"timestamp":1748116182366,"data":{},"stable":true}

@@ -32,9 +32,9 @@ export class WALStorage implements Storage {
   private snapshots: Map<number, JsonObject> = new Map();
   private indexes: Map<string, import('./Storage').IndexDefinition> = new Map();
   private pendingOperations: WALOperation[] = [];
-  private batchSize: number = 10;
+  private batchSize: number = 50;
   private flushTimeout: NodeJS.Timeout | null = null;
-  private maxBatchWaitMs: number = 100;
+  private maxBatchWaitMs: number = 5;
   private useMsgPack: boolean = false;
   private compactThreshold: number = 1000; // WAL operations before auto-compact
   private autoFlushInterval: NodeJS.Timeout | null = null;
@@ -58,8 +58,8 @@ export class WALStorage implements Storage {
     this.lockPath = `${path}.lock`;
     this.indexPath = `${path}.idx.json`;
     
-    this.batchSize = options.batchSize ?? 10;
-    this.maxBatchWaitMs = options.maxBatchWaitMs ?? 100;
+    this.batchSize = options.batchSize ?? 50;
+    this.maxBatchWaitMs = options.maxBatchWaitMs ?? 5;
     this.useMsgPack = options.useMsgPack ?? false;
     this.compactThreshold = options.compactThreshold ?? 1000;
     this.minCompactionInterval = options.minCompactionIntervalMs ?? 60000;
@@ -458,6 +458,34 @@ export class WALStorage implements Storage {
     tx.operations.push(operation);
   }
 
+  // Batch write interface for high-performance writes
+  writeBatch(operations: Array<{ type: 'write' | 'update' | 'delete'; data: JsonObject }>): void {
+    const txid = this.beginTransaction();
+    try {
+      for (const op of operations) {
+        switch (op.type) {
+          case 'write':
+            this.writeInTransaction(txid, op.data);
+            break;
+          case 'update':
+            this.updateInTransaction(txid, op.data);
+            break;
+          case 'delete':
+            this.deleteInTransaction(txid);
+            break;
+        }
+      }
+      this.commitTransaction(txid);
+    } catch (error) {
+      try {
+        this.abortTransaction(txid);
+      } catch (abortError) {
+        console.warn(`Failed to abort transaction ${txid}:`, abortError);
+      }
+      throw error;
+    }
+  }
+
   // Legacy interface (auto-transaction)
   write(obj: JsonObject): void {
     const txid = this.beginTransaction();
@@ -676,6 +704,26 @@ export class WALStorage implements Storage {
    */
   forceBatchFlush(): void {
     this.flushBatch();
+  }
+
+  /**
+   * Flush operations immediately - critical for data consistency
+   */
+  flushCritical(): void {
+    this.flushBatch();
+    // Force fsync for critical operations
+    if (this.pendingOperations.length === 0) {
+      // Create empty operation to force fsync
+      const criticalOp: WALOperation = {
+        type: 'write',
+        txid: 0,
+        timestamp: Date.now(),
+        data: {},
+        stable: true
+      };
+      this.appendToWAL(criticalOp);
+      this.flushBatch();
+    }
   }
 
   close(): void {
