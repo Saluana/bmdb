@@ -2,6 +2,7 @@
 import { TinyDB } from './core/TinyDB';
 export { TinyDB } from './core/TinyDB';
 export { Table, Document } from './core/Table';
+export { SchemaTable } from './core/SchemaTable';
 
 // Storage exports
 export type { Storage, StorageCtor } from './storage/Storage';
@@ -39,6 +40,28 @@ export type {
     JsonArray,
 } from './utils/types';
 export { LRUCache } from './utils/LRUCache';
+
+// Schema exports (V2)
+export { BmDbSchema, createSchema } from './schema/BmDbSchema';
+export type { BmDbFieldMeta, BmDbSchemaMeta, SchemaError } from './schema/types';
+export { 
+    BmDbSchemaError, 
+    BmDbValidationError, 
+    BmDbUniqueConstraintError,
+    createValidationError,
+    createUniqueConstraintError
+} from './schema/errors';
+export { unique, primaryKey, compoundIndex, field, getFieldMeta } from './schema/helpers';
+export {
+    getSchemaFieldMeta,
+    isPrimaryKey,
+    isUnique,
+    getUniqueFields,
+    getPrimaryKey,
+    getCompoundIndexGroups,
+    validateSchemaData,
+    safeValidateSchemaData
+} from './schema/utils';
 
 // Default export for convenience
 export default TinyDB;
