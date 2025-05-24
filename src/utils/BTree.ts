@@ -236,6 +236,9 @@ export class BTreeNode {
 export class BTree {
   private rootOffset: number = -1;
   private nodeCache = new Map<number, BTreeNode>();
+  private nodeCacheAccessOrder = new Map<number, number>(); // LRU tracking
+  private cacheAccessCounter = 0;
+  private readonly maxCacheSize = 1000; // Maximum nodes to cache
   private freeNodeOffsets: number[] = [];
   private nextNodeOffset: number = 32; // Start after header
 
@@ -597,6 +600,7 @@ export class BTree {
     // Mark right node as free
     this.freeNodeOffsets.push(rightNode.offset);
     this.nodeCache.delete(rightNode.offset);
+    this.nodeCacheAccessOrder.delete(rightNode.offset);
     
     this.saveNode(leftNode);
     this.saveNode(parent);
@@ -611,17 +615,25 @@ export class BTree {
       this.saveNode(leftNode);
       this.freeNodeOffsets.push(parent.offset);
       this.nodeCache.delete(parent.offset);
+      this.nodeCacheAccessOrder.delete(parent.offset);
     }
   }
 
   private loadNode(offset: number): BTreeNode {
     if (this.nodeCache.has(offset)) {
+      // Update access time for LRU
+      this.nodeCacheAccessOrder.set(offset, ++this.cacheAccessCounter);
       return this.nodeCache.get(offset)!;
     }
 
     const data = this.readNode(offset);
     const node = BTreeNode.deserialize(data, offset);
+    
+    // Check cache size and evict if necessary
+    this.evictCacheIfNeeded();
+    
     this.nodeCache.set(offset, node);
+    this.nodeCacheAccessOrder.set(offset, ++this.cacheAccessCounter);
     
     return node;
   }
@@ -629,10 +641,20 @@ export class BTree {
   private saveNode(node: BTreeNode): void {
     const data = node.serialize();
     this.writeNode(node.offset, data);
+    
+    // Check cache size and evict if necessary
+    this.evictCacheIfNeeded();
+    
     this.nodeCache.set(node.offset, node);
+    this.nodeCacheAccessOrder.set(node.offset, ++this.cacheAccessCounter);
   }
 
   private allocateNodeOffset(): number {
+    // Clean up free node offsets periodically
+    if (this.freeNodeOffsets.length > 1000) {
+      this.cleanupFreeNodeOffsets();
+    }
+    
     if (this.freeNodeOffsets.length > 0) {
       return this.freeNodeOffsets.pop()!;
     }
@@ -640,6 +662,20 @@ export class BTree {
     const offset = this.nextNodeOffset;
     this.nextNodeOffset += BTreeNode.NODE_SIZE;
     return offset;
+  }
+
+  // Get cache statistics for monitoring
+  getCacheStats(): {
+    cacheSize: number;
+    maxCacheSize: number;
+    freeNodeOffsetsCount: number;
+    cacheHitRatio?: number;
+  } {
+    return {
+      cacheSize: this.nodeCache.size,
+      maxCacheSize: this.maxCacheSize,
+      freeNodeOffsetsCount: this.freeNodeOffsets.length
+    };
   }
 
   // Update next node offset when loading from existing file
@@ -655,5 +691,39 @@ export class BTree {
   // Clear node cache (useful after compaction when offsets change)
   clearCache(): void {
     this.nodeCache.clear();
+    this.nodeCacheAccessOrder.clear();
+    this.cacheAccessCounter = 0;
+  }
+
+  // Evict least recently used nodes if cache is too large
+  private evictCacheIfNeeded(): void {
+    if (this.nodeCache.size < this.maxCacheSize) {
+      return;
+    }
+
+    // Find least recently used node
+    let lruOffset = -1;
+    let lruAccessTime = Infinity;
+    
+    for (const [offset, accessTime] of this.nodeCacheAccessOrder) {
+      if (accessTime < lruAccessTime) {
+        lruAccessTime = accessTime;
+        lruOffset = offset;
+      }
+    }
+
+    if (lruOffset !== -1) {
+      this.nodeCache.delete(lruOffset);
+      this.nodeCacheAccessOrder.delete(lruOffset);
+    }
+  }
+
+  // Cleanup free node offsets list to prevent unbounded growth
+  private cleanupFreeNodeOffsets(): void {
+    // Keep only the most recent free nodes to avoid memory bloat
+    const maxFreeNodes = 1000;
+    if (this.freeNodeOffsets.length > maxFreeNodes) {
+      this.freeNodeOffsets = this.freeNodeOffsets.slice(-maxFreeNodes);
+    }
   }
 }

@@ -326,14 +326,31 @@ export class Table<T extends Record<string, any> = any> {
     this._updateTable((table) => {
       for (const [docIdStr, doc] of Object.entries(table)) {
         for (const [fields, cond] of updates) {
-          if (typeof cond === 'function' ? cond(doc) : cond.test(doc)) {
+          let matches = false;
+          try {
+            if (typeof cond === 'function') {
+              matches = cond(doc);
+            } else if (cond && typeof cond === 'object' && 'test' in cond && typeof cond.test === 'function') {
+              matches = cond.test(doc);
+            }
+          } catch (error) {
+            matches = false;
+          }
+          
+          if (matches) {
             const docId = Table.documentIdClass(docIdStr);
-            const performUpdate = typeof fields === 'function' ? 
-              () => fields(doc) :
-              () => Object.assign(doc, fields);
-            
-            performUpdate();
-            updatedIds.push(docId);
+            if (!isNaN(docId) && isFinite(docId)) {
+              const performUpdate = typeof fields === 'function' ? 
+                () => fields(doc) :
+                () => Object.assign(doc, fields);
+              
+              try {
+                performUpdate();
+                updatedIds.push(docId);
+              } catch (error) {
+                console.warn(`Failed to update document ${docId}:`, error);
+              }
+            }
           }
         }
       }
@@ -435,9 +452,10 @@ export class Table<T extends Record<string, any> = any> {
   // Internal methods
   _loadData(data: Record<string, any>): void {
     // Called during initialization to load existing data
-    if (Object.keys(data).length > 0) {
-      const maxId = Math.max(...Object.keys(data).map(Number));
-      this._nextId = maxId + 1;
+    // No longer caches nextId to prevent race conditions
+    if (!data || typeof data !== 'object') {
+      console.warn(`Invalid data provided to _loadData for table '${this._name}'`);
+      return;
     }
   }
 
@@ -446,20 +464,23 @@ export class Table<T extends Record<string, any> = any> {
   }
 
   private _getNextId(): number {
-    if (this._nextId !== null) {
-      const nextId = this._nextId;
-      this._nextId = nextId + 1;
-      return nextId;
-    }
-
+    // Always read from storage to ensure we get the latest state
+    // This prevents race conditions when multiple instances modify the same table
     const table = this._readTable();
-    if (Object.keys(table).length === 0) {
-      this._nextId = 2;
+    
+    if (!table || typeof table !== 'object' || Object.keys(table).length === 0) {
       return 1;
     }
 
-    const maxId = Math.max(...Object.keys(table).map(Number));
-    this._nextId = maxId + 2;
+    const numericIds = Object.keys(table)
+      .map(Number)
+      .filter(id => !isNaN(id) && isFinite(id) && id > 0);
+    
+    if (numericIds.length === 0) {
+      return 1;
+    }
+
+    const maxId = Math.max(...numericIds);
     return maxId + 1;
   }
 

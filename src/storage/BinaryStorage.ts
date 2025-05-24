@@ -27,6 +27,8 @@ import {
     writeSync,
     fstatSync,
     ftruncateSync,
+    copyFileSync,
+    unlinkSync,
 } from 'fs';
 
 const MAGIC_NUMBER = 0x424d4442; // "BMDB"
@@ -159,7 +161,14 @@ export class BinaryStorage implements Storage {
         const offset = this.allocateDocumentSpace(data.length);
 
         // Write document data
-        writeSync(this.fd, data, 0, data.length, offset);
+        try {
+            const bytesWritten = writeSync(this.fd, data, 0, data.length, offset);
+            if (bytesWritten !== data.length) {
+                throw new Error(`Expected to write ${data.length} bytes, but wrote ${bytesWritten}`);
+            }
+        } catch (error) {
+            throw new Error(`Failed to write document data: ${error instanceof Error ? error.message : String(error)}`);
+        }
 
         // Update B-tree index
         const entry: BTreeEntry = {
@@ -195,8 +204,12 @@ export class BinaryStorage implements Storage {
     private initializeFile(): void {
         if (existsSync(this.path)) {
             // Open existing file
-            this.fd = openSync(this.path, 'r+');
-            this.fileSize = fstatSync(this.fd).size;
+            try {
+                this.fd = openSync(this.path, 'r+');
+                this.fileSize = fstatSync(this.fd).size;
+            } catch (error) {
+                throw new Error(`Failed to open existing file '${this.path}': ${error instanceof Error ? error.message : String(error)}`);
+            }
 
             if (this.fileSize >= HEADER_SIZE) {
                 this.readHeader();
@@ -221,8 +234,12 @@ export class BinaryStorage implements Storage {
             }
         } else {
             // Create new file
-            this.fd = openSync(this.path, 'w+');
-            this.createNewFile();
+            try {
+                this.fd = openSync(this.path, 'w+');
+                this.createNewFile();
+            } catch (error) {
+                throw new Error(`Failed to create new file '${this.path}': ${error instanceof Error ? error.message : String(error)}`);
+            }
         }
     }
 
@@ -248,7 +265,14 @@ export class BinaryStorage implements Storage {
 
     private readHeader(): void {
         const buffer = Buffer.alloc(HEADER_SIZE);
-        readSync(this.fd, buffer, 0, HEADER_SIZE, 0);
+        try {
+            const bytesRead = readSync(this.fd, buffer, 0, HEADER_SIZE, 0);
+            if (bytesRead !== HEADER_SIZE) {
+                throw new Error(`Expected to read ${HEADER_SIZE} bytes for header, but got ${bytesRead}`);
+            }
+        } catch (error) {
+            throw new Error(`Failed to read file header: ${error instanceof Error ? error.message : String(error)}`);
+        }
 
         const view = new DataView(
             buffer.buffer,
@@ -285,31 +309,55 @@ export class BinaryStorage implements Storage {
         view.setUint32(24, this.header.reserved1, false);
         view.setUint32(28, this.header.reserved2, false);
 
-        writeSync(this.fd, buffer, 0, HEADER_SIZE, 0);
+        try {
+            const bytesWritten = writeSync(this.fd, buffer, 0, HEADER_SIZE, 0);
+            if (bytesWritten !== HEADER_SIZE) {
+                throw new Error(`Expected to write ${HEADER_SIZE} bytes for header, but wrote ${bytesWritten}`);
+            }
+        } catch (error) {
+            throw new Error(`Failed to write file header: ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
 
     private readNodeFromFile(offset: number): Uint8Array {
         const buffer = Buffer.alloc(1024); // BTreeNode.NODE_SIZE
-        readSync(this.fd, buffer, 0, 1024, offset);
+        try {
+            const bytesRead = readSync(this.fd, buffer, 0, 1024, offset);
+            if (bytesRead !== 1024) {
+                throw new Error(`Expected to read 1024 bytes, but got ${bytesRead}`);
+            }
+        } catch (error) {
+            throw new Error(`Failed to read node from file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+        }
         return new Uint8Array(buffer);
     }
 
     private writeNodeToFile(offset: number, data: Uint8Array): void {
-        // Ensure file is large enough
-        const requiredSize = offset + data.length;
-        if (requiredSize > this.fileSize) {
-            // Extend file size
-            const padding = Buffer.alloc(requiredSize - this.fileSize);
-            writeSync(this.fd, padding, 0, padding.length, this.fileSize);
-            this.fileSize = requiredSize;
-        }
+        try {
+            // Ensure file is large enough
+            const requiredSize = offset + data.length;
+            if (requiredSize > this.fileSize) {
+                // Extend file size
+                const padding = Buffer.alloc(requiredSize - this.fileSize);
+                const paddingWritten = writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+                if (paddingWritten !== padding.length) {
+                    throw new Error(`Failed to extend file: expected to write ${padding.length} bytes, but wrote ${paddingWritten}`);
+                }
+                this.fileSize = requiredSize;
+            }
 
-        const buffer = Buffer.from(data);
-        writeSync(this.fd, buffer, 0, data.length, offset);
+            const buffer = Buffer.from(data);
+            const bytesWritten = writeSync(this.fd, buffer, 0, data.length, offset);
+            if (bytesWritten !== data.length) {
+                throw new Error(`Expected to write ${data.length} bytes, but wrote ${bytesWritten}`);
+            }
 
-        // Update next node offset if this is a new node
-        if (offset >= this.header.nextNodeOffset) {
-            this.header.nextNodeOffset = offset + 1024;
+            // Update next node offset if this is a new node
+            if (offset >= this.header.nextNodeOffset) {
+                this.header.nextNodeOffset = offset + 1024;
+            }
+        } catch (error) {
+            throw new Error(`Failed to write node to file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
@@ -342,9 +390,16 @@ export class BinaryStorage implements Storage {
         // Ensure file is large enough
         const requiredSize = offset + length;
         if (requiredSize > this.fileSize) {
-            const padding = Buffer.alloc(requiredSize - this.fileSize);
-            writeSync(this.fd, padding, 0, padding.length, this.fileSize);
-            this.fileSize = requiredSize;
+            try {
+                const padding = Buffer.alloc(requiredSize - this.fileSize);
+                const bytesWritten = writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+                if (bytesWritten !== padding.length) {
+                    throw new Error(`Failed to extend file: expected to write ${padding.length} bytes, but wrote ${bytesWritten}`);
+                }
+                this.fileSize = requiredSize;
+            } catch (error) {
+                throw new Error(`Failed to allocate document space: ${error instanceof Error ? error.message : String(error)}`);
+            }
         }
 
         this.header.freeSpaceOffset = offset + length;
@@ -416,12 +471,27 @@ export class BinaryStorage implements Storage {
             throw new Error('Storage not initialized');
         }
 
+        const backupPath = `${this.path}.backup`;
+        let backupCreated = false;
+
         try {
-            // 1. Read all existing documents
+            // 1. Create backup of the current file
+            try {
+                copyFileSync(this.path, backupPath);
+                backupCreated = true;
+            } catch (error) {
+                throw new Error(`Failed to create backup: ${error instanceof Error ? error.message : String(error)}`);
+            }
+
+            // 2. Read all existing documents
             const allEntries = this.btree.getAllEntries();
             if (allEntries.length === 0) {
                 // No documents to compact, just reset free space
                 this.resetToMinimalSize();
+                // Clean up backup on success
+                if (backupCreated && existsSync(backupPath)) {
+                    unlinkSync(backupPath);
+                }
                 return;
             }
 
@@ -513,10 +583,52 @@ export class BinaryStorage implements Storage {
             // 12. Clear node cache since offsets have changed
             this.btree.clearCache();
 
+            // 13. Clean up backup on success
+            if (backupCreated && existsSync(backupPath)) {
+                unlinkSync(backupPath);
+            }
+
             console.log(`Compaction completed. File size reduced from ${this.fileSize} to ${currentOffset} bytes.`);
 
         } catch (error) {
             console.error('Error during file compaction:', error);
+            
+            // Rollback to backup if compaction failed
+            if (backupCreated && existsSync(backupPath)) {
+                try {
+                    // Close current file
+                    closeSync(this.fd);
+                    
+                    // Restore from backup
+                    copyFileSync(backupPath, this.path);
+                    
+                    // Reopen file
+                    this.fd = openSync(this.path, 'r+');
+                    this.fileSize = fstatSync(this.fd).size;
+                    
+                    // Reload header
+                    this.readHeader();
+                    
+                    // Reinitialize B-tree
+                    this.btree = new BTree(
+                        (offset) => this.readNodeFromFile(offset),
+                        (offset, data) => this.writeNodeToFile(offset, data)
+                    );
+                    if (this.header.rootNodeOffset !== -1) {
+                        this.btree.setRootOffset(this.header.rootNodeOffset);
+                    }
+                    this.btree.setNextNodeOffset(this.header.nextNodeOffset);
+                    
+                    // Clean up backup
+                    unlinkSync(backupPath);
+                    
+                    console.log('Successfully rolled back to backup after compaction failure.');
+                } catch (rollbackError) {
+                    console.error('Failed to rollback after compaction error:', rollbackError);
+                    // Leave backup file for manual recovery
+                }
+            }
+            
             throw new Error(`File compaction failed: ${error instanceof Error ? error.message : String(error)}`);
         }
     }

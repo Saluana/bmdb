@@ -143,17 +143,40 @@ export class WALStorage implements Storage {
   }
 
   private appendToWAL(operation: WALOperation): void {
-    const operationLine = JSON.stringify(operation) + '\n';
-    appendFileSync(this.walPath, operationLine, 'utf8');
+    try {
+      const operationLine = JSON.stringify(operation) + '\n';
+      appendFileSync(this.walPath, operationLine, 'utf8');
+    } catch (error) {
+      throw new Error(`Failed to write to WAL: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private acquireLock(): void {
     if (this.lockFd !== null) return; // Already locked
     
-    try {
-      this.lockFd = openSync(this.lockPath, 'w');
-    } catch (error) {
-      throw new Error('Could not acquire write lock');
+    const maxRetries = 50;
+    const retryDelay = 100; // ms
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // Try to acquire lock atomically
+        this.lockFd = openSync(this.lockPath, 'wx'); // 'x' flag ensures exclusive creation
+        return; // Successfully acquired lock
+      } catch (error: any) {
+        if (error.code === 'EEXIST') {
+          // Lock file exists, wait and retry
+          if (attempt < maxRetries - 1) {
+            // Use synchronous sleep to avoid async complexity
+            const start = Date.now();
+            while (Date.now() - start < retryDelay) {
+              // Busy wait for the delay period
+            }
+            continue;
+          }
+        }
+        // Other errors or max retries exceeded
+        throw new Error(`Could not acquire write lock after ${maxRetries} attempts: ${error.message}`);
+      }
     }
   }
 
@@ -187,64 +210,100 @@ export class WALStorage implements Storage {
 
   // Transaction interface
   beginTransaction(): number {
+    // Acquire lock first to prevent race conditions
     this.acquireLock();
-    const txid = this.nextTxid++;
     
-    const beginOp: WALOperation = {
-      type: 'begin',
-      txid,
-      timestamp: Date.now(),
-      data: {}
-    };
+    try {
+      const txid = this.nextTxid++;
+      
+      // Check if transaction already exists (race condition check)
+      if (this.transactions.has(txid)) {
+        throw new Error(`Transaction ${txid} already exists`);
+      }
+      
+      const beginOp: WALOperation = {
+        type: 'begin',
+        txid,
+        timestamp: Date.now(),
+        data: {}
+      };
 
-    this.appendToWAL(beginOp);
-    this.transactions.set(txid, {
-      txid,
-      operations: [],
-      committed: false,
-      aborted: false
-    });
+      // Write to WAL first, then update in-memory state
+      this.appendToWAL(beginOp);
+      this.transactions.set(txid, {
+        txid,
+        operations: [],
+        committed: false,
+        aborted: false
+      });
 
-    return txid;
+      return txid;
+    } catch (error) {
+      // Release lock on failure
+      this.releaseLock();
+      throw error;
+    }
   }
 
   commitTransaction(txid: number): void {
     const tx = this.transactions.get(txid);
-    if (!tx || tx.committed || tx.aborted) {
-      throw new Error(`Transaction ${txid} cannot be committed`);
+    if (!tx) {
+      throw new Error(`Transaction ${txid} does not exist`);
+    }
+    if (tx.committed) {
+      throw new Error(`Transaction ${txid} is already committed`);
+    }
+    if (tx.aborted) {
+      throw new Error(`Transaction ${txid} is already aborted`);
     }
 
-    const commitOp: WALOperation = {
-      type: 'commit',
-      txid,
-      timestamp: Date.now(),
-      data: {},
-      stable: true
-    };
+    try {
+      const commitOp: WALOperation = {
+        type: 'commit',
+        txid,
+        timestamp: Date.now(),
+        data: {},
+        stable: true
+      };
 
-    this.appendToWAL(commitOp);
-    tx.committed = true;
-    this.buildSnapshot(txid);
-    this.updateStableTxid();
-    this.releaseLock();
+      // Write to WAL first, then update in-memory state atomically
+      this.appendToWAL(commitOp);
+      tx.committed = true;
+      this.buildSnapshot(txid);
+      this.updateStableTxid();
+    } finally {
+      // Always release lock, even if commit operations fail
+      this.releaseLock();
+    }
   }
 
   abortTransaction(txid: number): void {
     const tx = this.transactions.get(txid);
-    if (!tx || tx.committed || tx.aborted) {
-      throw new Error(`Transaction ${txid} cannot be aborted`);
+    if (!tx) {
+      throw new Error(`Transaction ${txid} does not exist`);
+    }
+    if (tx.committed) {
+      throw new Error(`Transaction ${txid} is already committed`);
+    }
+    if (tx.aborted) {
+      throw new Error(`Transaction ${txid} is already aborted`);
     }
 
-    const abortOp: WALOperation = {
-      type: 'abort',
-      txid,
-      timestamp: Date.now(),
-      data: {}
-    };
+    try {
+      const abortOp: WALOperation = {
+        type: 'abort',
+        txid,
+        timestamp: Date.now(),
+        data: {}
+      };
 
-    this.appendToWAL(abortOp);
-    tx.aborted = true;
-    this.releaseLock();
+      // Write to WAL first, then update in-memory state
+      this.appendToWAL(abortOp);
+      tx.aborted = true;
+    } finally {
+      // Always release lock, even if abort operations fail
+      this.releaseLock();
+    }
   }
 
   // Transactional writes
@@ -306,7 +365,12 @@ export class WALStorage implements Storage {
       this.writeInTransaction(txid, obj);
       this.commitTransaction(txid);
     } catch (error) {
-      this.abortTransaction(txid);
+      try {
+        this.abortTransaction(txid);
+      } catch (abortError) {
+        // Log abort error but still throw original error
+        console.warn(`Failed to abort transaction ${txid}:`, abortError);
+      }
       throw error;
     }
   }
@@ -317,7 +381,12 @@ export class WALStorage implements Storage {
       this.updateInTransaction(txid, obj);
       this.commitTransaction(txid);
     } catch (error) {
-      this.abortTransaction(txid);
+      try {
+        this.abortTransaction(txid);
+      } catch (abortError) {
+        // Log abort error but still throw original error
+        console.warn(`Failed to abort transaction ${txid}:`, abortError);
+      }
       throw error;
     }
   }
@@ -328,7 +397,12 @@ export class WALStorage implements Storage {
       this.deleteInTransaction(txid);
       this.commitTransaction(txid);
     } catch (error) {
-      this.abortTransaction(txid);
+      try {
+        this.abortTransaction(txid);
+      } catch (abortError) {
+        // Log abort error but still throw original error
+        console.warn(`Failed to abort transaction ${txid}:`, abortError);
+      }
       throw error;
     }
   }

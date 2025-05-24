@@ -1,6 +1,6 @@
 # BMDB Performance Evaluation Results
 
-Generated on: 2025-05-24T16:04:05.924Z
+Generated on: 2025-05-24T17:54:38.037Z
 
 ## Test Environment
 - Runtime: Bun
@@ -32,70 +32,70 @@ This performance evaluation compares different storage implementations in BMDB:
 
 | Operation | Storage | Ops/sec | Avg Time (ms) | Total Time (ms) |
 |-----------|---------|---------|---------------|----------------|
-| Bulk Insert (Individual) | Memory | 229032 | 0.004 | 4.4 |
-| Bulk Insert (Individual) | JSON | 325 | 3.080 | 3079.8 |
-| Bulk Insert (Individual) | WAL | 196 | 5.113 | 5112.7 |
-| Bulk Insert (Batch) | Memory | 1372292 | 0.001 | 0.7 |
-| Bulk Insert (Batch) | JSON | 126700 | 0.008 | 7.9 |
-| Bulk Insert (Batch) | WAL | 249797 | 0.004 | 4.0 |
-| Sequential Reads | Memory | 499396 | 0.002 | 2.0 |
-| Sequential Reads | JSON | 710395 | 0.001 | 1.4 |
-| Sequential Reads | WAL | 426371 | 0.002 | 2.3 |
-| Random Updates | Memory | 6040 | 0.166 | 165.6 |
-| Random Updates | JSON | 188 | 5.331 | 5331.4 |
-| Random Updates | WAL | 93 | 10.807 | 10806.8 |
-| Complex Queries | Memory | 2210 | 0.453 | 22.6 |
-| Complex Queries | JSON | 3551 | 0.282 | 14.1 |
-| Complex Queries | WAL | 1861 | 0.537 | 26.9 |
-| Mixed Workload | Memory | 1309 | 0.764 | 152.8 |
-| Mixed Workload | JSON | 223 | 4.480 | 895.9 |
-| Mixed Workload | WAL | 141 | 7.072 | 1414.5 |
+| Bulk Insert (Individual) | Memory | 7143 | 0.140 | 140.0 |
+| Bulk Insert (Individual) | JSON | 284 | 3.521 | 3520.8 |
+| Bulk Insert (Individual) | WAL | 148 | 6.753 | 6753.1 |
+| Bulk Insert (Batch) | Memory | 7303 | 0.137 | 136.9 |
+| Bulk Insert (Batch) | JSON | 43209 | 0.023 | 23.1 |
+| Bulk Insert (Batch) | WAL | 38229 | 0.026 | 26.2 |
+| Sequential Reads | Memory | 596362 | 0.002 | 1.7 |
+| Sequential Reads | JSON | 2173322 | 0.000 | 0.5 |
+| Sequential Reads | WAL | 146884 | 0.007 | 6.8 |
+| Random Updates | Memory | 5164 | 0.194 | 193.6 |
+| Random Updates | JSON | 11514 | 0.087 | 86.9 |
+| Random Updates | WAL | 2278 | 0.439 | 439.0 |
+| Complex Queries | Memory | 1959 | 0.510 | 25.5 |
+| Complex Queries | JSON | 241109 | 0.004 | 0.2 |
+| Complex Queries | WAL | 76992 | 0.013 | 0.6 |
+| Mixed Workload | Memory | 1216 | 0.822 | 164.4 |
+| Mixed Workload | JSON | 9158 | 0.109 | 21.8 |
+| Mixed Workload | WAL | 1629 | 0.614 | 122.8 |
 
 ### 2000 Documents
 
 | Operation | Storage | Ops/sec | Avg Time (ms) | Total Time (ms) |
 |-----------|---------|---------|---------------|----------------|
-| Bulk Insert (Individual) | Memory | 1737431 | 0.001 | 1.2 |
-| Bulk Insert (Individual) | JSON | 133 | 7.537 | 15073.9 |
-| Bulk Insert (Individual) | WAL | 69 | 14.578 | 29156.8 |
-| Bulk Insert (Batch) | Memory | 3668325 | 0.000 | 0.5 |
-| Bulk Insert (Batch) | JSON | 175938 | 0.006 | 11.4 |
-| Bulk Insert (Batch) | WAL | 21875 | 0.046 | 91.4 |
-| Sequential Reads | Memory | 780640 | 0.001 | 2.6 |
-| Sequential Reads | JSON | 653123 | 0.002 | 3.1 |
-| Sequential Reads | WAL | 130012 | 0.008 | 15.4 |
-| Random Updates | Memory | 2519 | 0.397 | 396.9 |
-| Random Updates | JSON | 60 | 16.566 | 16566.0 |
-| Random Updates | WAL | 35 | 28.549 | 28549.0 |
-| Complex Queries | Memory | 1716 | 0.583 | 29.1 |
-| Complex Queries | JSON | 907 | 1.102 | 55.1 |
-| Complex Queries | WAL | 558 | 1.792 | 89.6 |
-| Mixed Workload | Memory | 449 | 2.226 | 445.2 |
-| Mixed Workload | JSON | 77 | 13.002 | 2600.4 |
-| Mixed Workload | WAL | 51 | 19.783 | 3956.7 |
+| Bulk Insert (Individual) | Memory | 3467 | 0.288 | 576.9 |
+| Bulk Insert (Individual) | JSON | 136 | 7.348 | 14696.9 |
+| Bulk Insert (Individual) | WAL | 80 | 12.561 | 25121.7 |
+| Bulk Insert (Batch) | Memory | 3881 | 0.258 | 515.3 |
+| Bulk Insert (Batch) | JSON | 76362 | 0.013 | 26.2 |
+| Bulk Insert (Batch) | WAL | 12773 | 0.078 | 156.6 |
+| Sequential Reads | Memory | 1763798 | 0.001 | 1.1 |
+| Sequential Reads | JSON | 1063406 | 0.001 | 1.9 |
+| Sequential Reads | WAL | 1387323 | 0.001 | 1.4 |
+| Random Updates | Memory | 1792 | 0.558 | 558.0 |
+| Random Updates | JSON | 9038 | 0.111 | 110.6 |
+| Random Updates | WAL | 1400 | 0.714 | 714.2 |
+| Complex Queries | Memory | 741 | 1.349 | 67.5 |
+| Complex Queries | JSON | 218660 | 0.005 | 0.2 |
+| Complex Queries | WAL | 211379 | 0.005 | 0.2 |
+| Mixed Workload | Memory | 588 | 1.702 | 340.3 |
+| Mixed Workload | JSON | 4722 | 0.212 | 42.4 |
+| Mixed Workload | WAL | 853 | 1.173 | 234.5 |
 
 ### WAL-Specific Features
 
 | Operation | Ops/sec | Avg Time (ms) | Total Time (ms) |
 |-----------|---------|---------------|----------------|
-| Transactions (5 ops each) | 538 | 1.858 | 185.8 |
-| Concurrent Reads | 47900 | 0.021 | 20.9 |
+| Transactions (5 ops each) | 429 | 2.333 | 233.3 |
+| Concurrent Reads | 58960 | 0.017 | 17.0 |
 
 ## Performance Analysis
 
 ### Storage Comparison
 
 **Memory**:
-- Average: 691780 ops/sec
-- Average latency: 0.383ms
+- Average: 199451 ops/sec
+- Average latency: 0.497ms
 
 **JSON**:
-- Average: 139302 ops/sec
-- Average latency: 4.283ms
+- Average: 320910 ops/sec
+- Average latency: 0.953ms
 
 **WAL**:
-- Average: 62821 ops/sec
-- Average latency: 6.441ms
+- Average: 138525 ops/sec
+- Average latency: 1.767ms
 
 ### Key Findings
 

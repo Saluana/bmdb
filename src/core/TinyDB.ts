@@ -17,33 +17,52 @@ export class TinyDB {
     private _tables = new Map<string, Table<any>>();
 
     constructor(
-        pathOrOptions: any = 'db.json',
-        options: { storage?: any } = {}
+        pathOrOptions: string | { storage?: StorageCtor } = 'db.json',
+        options: { storage?: StorageCtor } = {}
     ) {
         // Handle different constructor patterns
         let StorageCls = TinyDB.defaultStorageClass;
         let storageArgs: any[] = [];
 
+        // Validate storage class if provided
         if (options.storage) {
-            StorageCls = options.storage;
+            if (typeof options.storage !== 'function') {
+                throw new Error('Storage option must be a constructor function');
+            }
+            StorageCls = options.storage as any;
             storageArgs = [pathOrOptions];
-        } else if (typeof pathOrOptions === 'object' && pathOrOptions.storage) {
-            StorageCls = pathOrOptions.storage;
+        } else if (typeof pathOrOptions === 'object' && pathOrOptions !== null && pathOrOptions.storage) {
+            if (typeof pathOrOptions.storage !== 'function') {
+                throw new Error('Storage option must be a constructor function');
+            }
+            StorageCls = pathOrOptions.storage as any;
             storageArgs = [];
-        } else {
+        } else if (typeof pathOrOptions === 'string') {
             storageArgs = [pathOrOptions];
+        } else {
+            throw new Error('First argument must be a string path or options object');
         }
 
-        this._storage = new StorageCls(...storageArgs);
+        try {
+            this._storage = new StorageCls(...storageArgs);
+        } catch (error) {
+            throw new Error(`Failed to initialize storage: ${error instanceof Error ? error.message : String(error)}`);
+        }
 
         // Load existing data
-        const data = this._storage.read();
-        if (data) {
-            for (const [name, tableData] of Object.entries(data)) {
-                const table = new TinyDB.tableClass(this._storage, name);
-                table._loadData(tableData as any);
-                this._tables.set(name, table);
+        try {
+            const data = this._storage.read();
+            if (data && typeof data === 'object') {
+                for (const [name, tableData] of Object.entries(data)) {
+                    if (typeof name === 'string' && tableData !== null && typeof tableData === 'object') {
+                        const table = new TinyDB.tableClass(this._storage, name);
+                        table._loadData(tableData as Record<string, any>);
+                        this._tables.set(name, table);
+                    }
+                }
             }
+        } catch (error) {
+            throw new Error(`Failed to load existing data: ${error instanceof Error ? error.message : String(error)}`);
         }
 
         // Return proxy to forward unknown methods to default table
@@ -52,13 +71,16 @@ export class TinyDB {
                 if (Reflect.has(target, prop)) {
                     return Reflect.get(target, prop, receiver);
                 }
-                // Forward to default table
-                const defaultTable = target.table(TinyDB.defaultTableName);
-                const val = (defaultTable as any)[prop as any];
-                if (typeof val === 'function') {
-                    return val.bind(defaultTable);
+                // Forward to default table only for string properties
+                if (typeof prop === 'string') {
+                    const defaultTable = target.table(TinyDB.defaultTableName);
+                    const val = (defaultTable as any)[prop];
+                    if (typeof val === 'function') {
+                        return val.bind(defaultTable);
+                    }
+                    return val;
                 }
-                return val;
+                return undefined;
             },
         });
     }
@@ -69,10 +91,24 @@ export class TinyDB {
 
     table<T extends Record<string, any> = any>(
         name: string,
-        options: any = {}
+        options: { cacheSize?: number; persistEmpty?: boolean } = {}
     ): Table<T> {
+        if (typeof name !== 'string' || name.trim() === '') {
+            throw new Error('Table name must be a non-empty string');
+        }
+        
         if (this._tables.has(name)) {
             return this._tables.get(name)! as Table<T>;
+        }
+
+        // Validate options
+        if (options && typeof options === 'object') {
+            if (options.cacheSize !== undefined && (typeof options.cacheSize !== 'number' || options.cacheSize < 0)) {
+                throw new Error('cacheSize option must be a non-negative number');
+            }
+            if (options.persistEmpty !== undefined && typeof options.persistEmpty !== 'boolean') {
+                throw new Error('persistEmpty option must be a boolean');
+            }
         }
 
         const table = new TinyDB.tableClass(this._storage, name, options);
@@ -108,8 +144,16 @@ export class TinyDB {
     }
 
     tables(): Set<string> {
-        const data = this._storage.read();
-        return new Set(data ? Object.keys(data) : []);
+        try {
+            const data = this._storage.read();
+            if (data && typeof data === 'object' && data !== null) {
+                return new Set(Object.keys(data).filter(key => typeof key === 'string'));
+            }
+            return new Set();
+        } catch (error) {
+            console.warn('Failed to read table names:', error);
+            return new Set();
+        }
     }
 
     dropTables(): void {
@@ -118,14 +162,22 @@ export class TinyDB {
     }
 
     dropTable(name: string): void {
+        if (typeof name !== 'string' || name.trim() === '') {
+            throw new Error('Table name must be a non-empty string');
+        }
+        
         if (this._tables.has(name)) {
             this._tables.delete(name);
         }
 
-        const data = this._storage.read();
-        if (data && data[name]) {
-            delete data[name];
-            this._storage.write(data);
+        try {
+            const data = this._storage.read();
+            if (data && typeof data === 'object' && data !== null && data[name]) {
+                delete data[name];
+                this._storage.write(data);
+            }
+        } catch (error) {
+            throw new Error(`Failed to drop table '${name}': ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
@@ -155,11 +207,20 @@ export class TinyDB {
     }
 
     // Forwarded Table methods for the default table
-    insert(document: any): number {
+    insert(document: Record<string, any>): number {
+        if (!document || typeof document !== 'object') {
+            throw new Error('Document must be an object');
+        }
         return this.table(TinyDB.defaultTableName).insert(document);
     }
 
-    insertMultiple(documents: any[]): number[] {
+    insertMultiple(documents: Record<string, any>[]): number[] {
+        if (!Array.isArray(documents)) {
+            throw new Error('Documents must be an array');
+        }
+        if (documents.some(doc => !doc || typeof doc !== 'object')) {
+            throw new Error('All documents must be objects');
+        }
         return this.table(TinyDB.defaultTableName).insertMultiple(documents);
     }
 
@@ -172,26 +233,50 @@ export class TinyDB {
     }
 
     get(cond?: any, docId?: number, docIds?: number[]): any {
+        if (docId !== undefined && (typeof docId !== 'number' || !Number.isInteger(docId) || docId < 0)) {
+            throw new Error('docId must be a non-negative integer');
+        }
+        if (docIds !== undefined && (!Array.isArray(docIds) || docIds.some(id => typeof id !== 'number' || !Number.isInteger(id) || id < 0))) {
+            throw new Error('docIds must be an array of non-negative integers');
+        }
         return this.table(TinyDB.defaultTableName).get(cond, docId, docIds);
     }
 
     contains(cond?: any, docId?: number): boolean {
+        if (docId !== undefined && (typeof docId !== 'number' || !Number.isInteger(docId) || docId < 0)) {
+            throw new Error('docId must be a non-negative integer');
+        }
         return this.table(TinyDB.defaultTableName).contains(cond, docId);
     }
 
-    update(fields: any, cond?: any, docIds?: number[]): number[] {
+    update(fields: Record<string, any>, cond?: any, docIds?: number[]): number[] {
+        if (!fields || typeof fields !== 'object') {
+            throw new Error('Fields must be an object');
+        }
+        if (docIds !== undefined && (!Array.isArray(docIds) || docIds.some(id => typeof id !== 'number' || !Number.isInteger(id) || id < 0))) {
+            throw new Error('docIds must be an array of non-negative integers');
+        }
         return this.table(TinyDB.defaultTableName).update(fields, cond, docIds);
     }
 
-    updateMultiple(updates: any[]): number[] {
+    updateMultiple(updates: Array<[Partial<any> | ((doc: Record<string, any>) => void), any]>): number[] {
+        if (!Array.isArray(updates)) {
+            throw new Error('Updates must be an array');
+        }
         return this.table(TinyDB.defaultTableName).updateMultiple(updates);
     }
 
-    upsert(document: any, cond?: any): number[] {
+    upsert(document: Record<string, any>, cond?: any): number[] {
+        if (!document || typeof document !== 'object') {
+            throw new Error('Document must be an object');
+        }
         return this.table(TinyDB.defaultTableName).upsert(document, cond);
     }
 
     remove(cond?: any, docIds?: number[]): number[] {
+        if (docIds !== undefined && (!Array.isArray(docIds) || docIds.some(id => typeof id !== 'number' || !Number.isInteger(id) || id < 0))) {
+            throw new Error('docIds must be an array of non-negative integers');
+        }
         return this.table(TinyDB.defaultTableName).remove(cond, docIds);
     }
 

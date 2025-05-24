@@ -211,7 +211,7 @@ async function demonstrateV2Features() {
   
   // Find admin users
   const adminUsers = users.search((user) => user.role === 'admin');
-  console.log('✅ Admin users:', adminUsers.map(u => u.name));
+  console.log('✅ Admin users:', adminUsers.map(u => (u as any).name));
   
   // Update with validation
   const updatedUsers = users.update({
