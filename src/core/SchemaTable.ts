@@ -28,7 +28,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         // Validate schema
         const validatedData = this._schema.validate(data);
 
-        // Check uniqueness constraints synchronously
+        // Check uniqueness constraints synchronously (fallback to basic implementation)
         const uniqueFields = this._schema.getUniqueFields();
         for (const field of uniqueFields) {
             const value = validatedData[field];
@@ -38,6 +38,21 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             for (const doc of Object.values(table)) {
                 if (doc[field as string] === value) {
                     throw createUniqueConstraintError(String(field), value);
+                }
+            }
+        }
+
+        // Check compound unique constraints synchronously
+        const compoundGroups = this._schema.getCompoundIndexGroups();
+        for (const [groupName, fields] of Object.entries(compoundGroups)) {
+            const values = fields.map(field => validatedData[field]);
+            if (values.some(v => v === undefined || v === null)) continue;
+
+            const table = this._readTable();
+            for (const doc of Object.values(table)) {
+                const docValues = fields.map(field => (doc as any)[field]);
+                if (JSON.stringify(docValues) === JSON.stringify(values)) {
+                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
                 }
             }
         }
@@ -59,11 +74,13 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             validatedDocs.push(validatedData);
         }
 
-        // Check uniqueness for all documents
+        // Check uniqueness for all documents synchronously
         const table = this._readTable();
         const uniqueFields = this._schema.getUniqueFields();
+        const compoundGroups = this._schema.getCompoundIndexGroups();
 
         for (const data of validatedDocs) {
+            // Check single field uniqueness
             for (const field of uniqueFields) {
                 const value = data[field];
                 if (value === undefined || value === null) continue;
@@ -71,6 +88,19 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                 for (const doc of Object.values(table)) {
                     if (doc[field as string] === value) {
                         throw createUniqueConstraintError(String(field), value);
+                    }
+                }
+            }
+
+            // Check compound uniqueness
+            for (const [groupName, fields] of Object.entries(compoundGroups)) {
+                const values = fields.map(field => data[field]);
+                if (values.some(v => v === undefined || v === null)) continue;
+
+                for (const doc of Object.values(table)) {
+                    const docValues = fields.map(field => (doc as any)[field]);
+                    if (JSON.stringify(docValues) === JSON.stringify(values)) {
+                        throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
                     }
                 }
             }
@@ -130,6 +160,41 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
 
     getPrimaryKey(): keyof T | undefined {
         return this._schema.getPrimaryKey();
+    }
+
+    // Index management methods
+    async createIndex(field: keyof T, options?: { unique?: boolean }): Promise<void> {
+        return this.storage.createIndex(this.name, String(field), options);
+    }
+
+    async createCompoundIndex(fields: Array<keyof T>, options?: { unique?: boolean; name?: string }): Promise<void> {
+        return this.storage.createCompoundIndex(this.name, fields.map(String), options);
+    }
+
+    async dropIndex(indexName: string): Promise<void> {
+        return this.storage.dropIndex(this.name, indexName);
+    }
+
+    async listIndexes(): Promise<import('../storage/Storage').IndexDefinition[]> {
+        return this.storage.listIndexes(this.name);
+    }
+
+    // Auto-create indexes based on schema metadata
+    async autoCreateIndexes(): Promise<void> {
+        // Create indexes for unique fields
+        const uniqueFields = this.getUniqueFields();
+        for (const field of uniqueFields) {
+            await this.createIndex(field, { unique: true });
+        }
+
+        // Create compound indexes
+        const compoundGroups = this._schema.getCompoundIndexGroups();
+        for (const [groupName, fields] of Object.entries(compoundGroups)) {
+            await this.createCompoundIndex(fields, { 
+                unique: true, 
+                name: `${this.name}_compound_${groupName}` 
+            });
+        }
     }
 
     // String representation

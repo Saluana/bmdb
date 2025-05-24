@@ -28,6 +28,51 @@ export abstract class Middleware implements Storage {
   abstract read(): JsonObject | null;
   abstract write(data: JsonObject): void;
   abstract close(): void;
+
+  // Index management (delegated to underlying storage)
+  async createIndex(tableName: string, field: string, options?: { unique?: boolean }): Promise<void> {
+    return this._storage.createIndex(tableName, field, options);
+  }
+
+  async createCompoundIndex(tableName: string, fields: string[], options?: { unique?: boolean; name?: string }): Promise<void> {
+    return this._storage.createCompoundIndex(tableName, fields, options);
+  }
+
+  async dropIndex(tableName: string, indexName: string): Promise<void> {
+    return this._storage.dropIndex(tableName, indexName);
+  }
+
+  async listIndexes(tableName?: string): Promise<import('./storage/Storage').IndexDefinition[]> {
+    return this._storage.listIndexes(tableName);
+  }
+
+  async checkUnique(tableName: string, field: string, value: any, excludeDocId?: string): Promise<boolean> {
+    return this._storage.checkUnique(tableName, field, value, excludeDocId);
+  }
+
+  async checkCompoundUnique(tableName: string, fields: string[], values: any[], excludeDocId?: string): Promise<boolean> {
+    return this._storage.checkCompoundUnique(tableName, fields, values, excludeDocId);
+  }
+
+  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean {
+    return this._storage.supportsFeature(feature);
+  }
+
+  async acquireWriteLock?(): Promise<void> {
+    return this._storage.acquireWriteLock?.();
+  }
+
+  async releaseWriteLock?(): Promise<void> {
+    return this._storage.releaseWriteLock?.();
+  }
+
+  async acquireReadLock?(): Promise<void> {
+    return this._storage.acquireReadLock?.();
+  }
+
+  async releaseReadLock?(): Promise<void> {
+    return this._storage.releaseReadLock?.();
+  }
 }
 
 /**

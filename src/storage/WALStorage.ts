@@ -458,4 +458,62 @@ export class WALStorage implements Storage {
     this.stableTxid = 0;
     this.loadFromWAL();
   }
+
+  // Index management (basic implementations for WAL storage)
+  async createIndex(tableName: string, field: string, options?: { unique?: boolean }): Promise<void> {
+    // TODO: Implement index management for WAL storage
+    console.warn('WALStorage: createIndex not fully implemented');
+  }
+
+  async createCompoundIndex(tableName: string, fields: string[], options?: { unique?: boolean; name?: string }): Promise<void> {
+    // TODO: Implement compound index management for WAL storage
+    console.warn('WALStorage: createCompoundIndex not fully implemented');
+  }
+
+  async dropIndex(tableName: string, indexName: string): Promise<void> {
+    // TODO: Implement index dropping for WAL storage
+    console.warn('WALStorage: dropIndex not fully implemented');
+  }
+
+  async listIndexes(tableName?: string): Promise<import('./Storage').IndexDefinition[]> {
+    // TODO: Implement index listing for WAL storage
+    return [];
+  }
+
+  async checkUnique(tableName: string, field: string, value: any, excludeDocId?: string): Promise<boolean> {
+    // Use current snapshot for uniqueness checking
+    const data = this.read();
+    const table = data?.[tableName];
+    if (!table || typeof table !== 'object') return true;
+
+    for (const [docId, doc] of Object.entries(table)) {
+      if (excludeDocId && docId === excludeDocId) continue;
+      if (typeof doc === 'object' && doc !== null && (doc as any)[field] === value) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async checkCompoundUnique(tableName: string, fields: string[], values: any[], excludeDocId?: string): Promise<boolean> {
+    // Use current snapshot for compound uniqueness checking
+    const data = this.read();
+    const table = data?.[tableName];
+    if (!table || typeof table !== 'object') return true;
+
+    for (const [docId, doc] of Object.entries(table)) {
+      if (excludeDocId && docId === excludeDocId) continue;
+      if (typeof doc === 'object' && doc !== null) {
+        const docValues = fields.map(field => (doc as any)[field]);
+        if (JSON.stringify(docValues) === JSON.stringify(values)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean {
+    return ['tx', 'async'].includes(feature);
+  }
 }
