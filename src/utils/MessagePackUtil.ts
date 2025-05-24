@@ -3,6 +3,10 @@
  * Implements a subset of MessagePack format for efficient binary serialization
  */
 
+// Cached encoder/decoder instances for performance optimization
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
 export class MessagePackUtil {
   // MessagePack format types
   private static readonly FIXMAP_PREFIX = 0x80;
@@ -114,7 +118,7 @@ export class MessagePackUtil {
   }
 
   private static encodeString(value: string, chunks: Uint8Array[]): void {
-    const utf8 = new TextEncoder().encode(value);
+    const utf8 = textEncoder.encode(value);
     const length = utf8.length;
 
     if (length <= 31) {
@@ -294,7 +298,7 @@ class MessagePackDecoder {
   private decodeString(length: number): string {
     const bytes = this.data.slice(this.offset, this.offset + length);
     this.offset += length;
-    return new TextDecoder().decode(bytes);
+    return textDecoder.decode(bytes);
   }
 
   private decodeArray(length: number): any[] {

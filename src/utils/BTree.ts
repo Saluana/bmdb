@@ -3,6 +3,10 @@
  * Provides fast lookups for document locations in the binary file
  */
 
+// Cached encoder/decoder instances for performance optimization
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
 export interface BTreeEntry {
   key: string;     // Document ID
   offset: number;  // File offset where document starts
@@ -51,7 +55,7 @@ export class BTreeNode {
     // Keys and entries/children
     for (let i = 0; i < this.keys.length; i++) {
       const key = this.keys[i];
-      const keyBytes = new TextEncoder().encode(key);
+      const keyBytes = textEncoder.encode(key);
       
       // Key length and key data
       view.setUint16(offset, keyBytes.length, false);
@@ -104,7 +108,7 @@ export class BTreeNode {
       const keyLength = view.getUint16(offset, false);
       offset += 2;
       const keyBytes = data.slice(offset, offset + keyLength);
-      const key = new TextDecoder().decode(keyBytes);
+      const key = textDecoder.decode(keyBytes);
       offset += keyLength;
 
       node.keys.push(key);
