@@ -149,7 +149,7 @@ export class BTreeNode {
   // Find child index for key in internal node
   findChildIndex(key: string): number {
     let i = 0;
-    while (i < this.keys.length && key >= this.keys[i]) {
+    while (i < this.keys.length && key.localeCompare(this.keys[i]) >= 0) {
       i++;
     }
     return i;
@@ -163,7 +163,7 @@ export class BTreeNode {
 
     // Find insertion point
     let i = 0;
-    while (i < this.keys.length && entry.key > this.keys[i]) {
+    while (i < this.keys.length && entry.key.localeCompare(this.keys[i]) > 0) {
       i++;
     }
 
