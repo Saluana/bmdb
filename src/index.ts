@@ -8,6 +8,9 @@ export type { Storage, StorageCtor } from './storage/Storage';
 export { JSONStorage } from './storage/JSONStorage';
 export { MemoryStorage } from './storage/MemoryStorage';
 export { BinaryStorage } from './storage/BinaryStorage';
+export { WALStorage } from './storage/WALStorage';
+export { WALJSONStorage } from './storage/WALJSONStorage';
+export type { WALOperation } from './storage/WALStorage';
 
 // Query exports
 export { QueryInstance } from './query/QueryInstance';
