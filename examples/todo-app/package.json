@@ -1,0 +1,18 @@
+{
+  "name": "bmdb-todo-example",
+  "version": "1.0.0",
+  "description": "A simple todo application demonstrating BmDB usage",
+  "main": "demo.ts",
+  "scripts": {
+    "demo": "npx tsx demo.ts",
+    "build": "npx tsc",
+    "dev": "npx tsx --watch demo.ts"
+  },
+  "keywords": ["bmdb", "todo", "example", "database"],
+  "author": "BmDB Examples",
+  "license": "MIT",
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

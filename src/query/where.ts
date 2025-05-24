@@ -292,6 +292,39 @@ export class Query {
     query._hash = null; // Callable objects can be mutable, so no caching
     return query;
   }
+
+  // Friendly alias methods for comparison operations
+  equals(rhs: any): QueryInstance {
+    return this.__eq__(rhs);
+  }
+
+  notEquals(rhs: any): QueryInstance {
+    return this.__ne__(rhs);
+  }
+
+  lessThan(rhs: any): QueryInstance {
+    return this.__lt__(rhs);
+  }
+
+  lessThanOrEqual(rhs: any): QueryInstance {
+    return this.__le__(rhs);
+  }
+
+  lte(rhs: any): QueryInstance {
+    return this.__le__(rhs);
+  }
+
+  greaterThan(rhs: any): QueryInstance {
+    return this.__gt__(rhs);
+  }
+
+  greaterThanOrEqual(rhs: any): QueryInstance {
+    return this.__ge__(rhs);
+  }
+
+  gte(rhs: any): QueryInstance {
+    return this.__ge__(rhs);
+  }
 }
 
 // Create a proxy to handle property access
