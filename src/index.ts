@@ -7,6 +7,7 @@ export { Table, Document } from './core/Table';
 export type { Storage, StorageCtor } from './storage/Storage';
 export { JSONStorage } from './storage/JSONStorage';
 export { MemoryStorage } from './storage/MemoryStorage';
+export { BinaryStorage } from './storage/BinaryStorage';
 
 // Query exports
 export { QueryInstance } from './query/QueryInstance';
