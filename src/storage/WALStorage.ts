@@ -22,17 +22,21 @@ export class WALStorage implements Storage {
   private walPath: string;
   private dataPath: string;
   private lockPath: string;
+  private indexPath: string;
   private nextTxid: number = 1;
   private lockFd: number | null = null;
   private transactions: Map<number, Transaction> = new Map();
   private stableTxid: number = 0;
   private snapshots: Map<number, JsonObject> = new Map();
+  private indexes: Map<string, import('./Storage').IndexDefinition> = new Map();
 
   constructor(path: string) {
     this.dataPath = path;
     this.walPath = `${path}.wal`;
     this.lockPath = `${path}.lock`;
+    this.indexPath = `${path}.idx.json`;
     this.loadFromWAL();
+    this.loadIndexes();
   }
 
   private loadFromWAL(): void {
@@ -459,29 +463,69 @@ export class WALStorage implements Storage {
     this.loadFromWAL();
   }
 
-  // Index management (basic implementations for WAL storage)
+  // Index management for WAL storage
   async createIndex(tableName: string, field: string, options?: { unique?: boolean }): Promise<void> {
-    // TODO: Implement index management for WAL storage
-    console.warn('WALStorage: createIndex not fully implemented');
+    const indexName = `${tableName}_${field}`;
+    const indexDef: import('./Storage').IndexDefinition = {
+      tableName,
+      fields: [field],
+      unique: options?.unique ?? false,
+      compound: false,
+      name: indexName
+    };
+    
+    // Store index definition
+    this.indexes.set(indexName, indexDef);
+    this.saveIndexes();
+    
+    // Validate existing data if unique constraint is being added
+    if (options?.unique) {
+      await this.validateUniqueConstraint(tableName, [field]);
+    }
   }
 
   async createCompoundIndex(tableName: string, fields: string[], options?: { unique?: boolean; name?: string }): Promise<void> {
-    // TODO: Implement compound index management for WAL storage
-    console.warn('WALStorage: createCompoundIndex not fully implemented');
+    const indexName = options?.name || `${tableName}_${fields.join('_')}`;
+    const indexDef: import('./Storage').IndexDefinition = {
+      tableName,
+      fields,
+      unique: options?.unique ?? false,
+      compound: true,
+      name: indexName
+    };
+    
+    // Store index definition
+    this.indexes.set(indexName, indexDef);
+    this.saveIndexes();
+    
+    // Validate existing data if unique constraint is being added
+    if (options?.unique) {
+      await this.validateUniqueConstraint(tableName, fields);
+    }
   }
 
   async dropIndex(tableName: string, indexName: string): Promise<void> {
-    // TODO: Implement index dropping for WAL storage
-    console.warn('WALStorage: dropIndex not fully implemented');
+    this.indexes.delete(indexName);
+    this.saveIndexes();
   }
 
   async listIndexes(tableName?: string): Promise<import('./Storage').IndexDefinition[]> {
-    // TODO: Implement index listing for WAL storage
-    return [];
+    return Array.from(this.indexes.values()).filter(
+      index => !tableName || index.tableName === tableName
+    );
   }
 
   async checkUnique(tableName: string, field: string, value: any, excludeDocId?: string): Promise<boolean> {
-    // Use current snapshot for uniqueness checking
+    // Check if there's a unique index for this field
+    const indexName = `${tableName}_${field}`;
+    const indexDef = this.indexes.get(indexName);
+    
+    if (indexDef && indexDef.unique) {
+      // Use index-aware checking for better performance
+      return this.checkUniqueWithIndex(tableName, [field], [value], excludeDocId);
+    }
+    
+    // Fallback to full table scan using current snapshot
     const data = this.read();
     const table = data?.[tableName];
     if (!table || typeof table !== 'object') return true;
@@ -496,7 +540,17 @@ export class WALStorage implements Storage {
   }
 
   async checkCompoundUnique(tableName: string, fields: string[], values: any[], excludeDocId?: string): Promise<boolean> {
-    // Use current snapshot for compound uniqueness checking
+    // Check if there's a compound unique index for these fields
+    for (const indexDef of this.indexes.values()) {
+      if (indexDef.tableName === tableName && 
+          indexDef.compound && 
+          indexDef.unique && 
+          JSON.stringify(indexDef.fields) === JSON.stringify(fields)) {
+        return this.checkUniqueWithIndex(tableName, fields, values, excludeDocId);
+      }
+    }
+    
+    // Fallback to full table scan using current snapshot
     const data = this.read();
     const table = data?.[tableName];
     if (!table || typeof table !== 'object') return true;
@@ -513,7 +567,101 @@ export class WALStorage implements Storage {
     return true;
   }
 
+  private checkUniqueWithIndex(tableName: string, fields: string[], values: any[], excludeDocId?: string): boolean {
+    // Transaction-aware uniqueness checking
+    // First check the stable snapshot
+    const data = this.read();
+    const table = data?.[tableName];
+    
+    if (table && typeof table === 'object') {
+      for (const [docId, doc] of Object.entries(table)) {
+        if (excludeDocId && docId === excludeDocId) continue;
+        if (typeof doc === 'object' && doc !== null) {
+          const docValues = fields.map(field => (doc as any)[field]);
+          if (JSON.stringify(docValues) === JSON.stringify(values)) {
+            return false;
+          }
+        }
+      }
+    }
+    
+    // Also check uncommitted transactions for potential conflicts
+    for (const transaction of this.transactions.values()) {
+      if (!transaction.committed && !transaction.aborted) {
+        for (const operation of transaction.operations) {
+          if (operation.type === 'write' || operation.type === 'update') {
+            const opTable = operation.data[tableName];
+            if (opTable && typeof opTable === 'object') {
+              for (const [docId, doc] of Object.entries(opTable)) {
+                if (excludeDocId && docId === excludeDocId) continue;
+                if (typeof doc === 'object' && doc !== null) {
+                  const docValues = fields.map(field => (doc as any)[field]);
+                  if (JSON.stringify(docValues) === JSON.stringify(values)) {
+                    return false;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    return true;
+  }
+
   supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean {
-    return ['tx', 'async'].includes(feature);
+    return ['tx', 'async', 'compoundIndex'].includes(feature);
+  }
+
+  private loadIndexes(): void {
+    try {
+      if (existsSync(this.indexPath)) {
+        const raw = readFileSync(this.indexPath, 'utf-8');
+        const indexData = JSON.parse(raw) || {};
+        
+        for (const [name, def] of Object.entries(indexData)) {
+          this.indexes.set(name, def as import('./Storage').IndexDefinition);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to load indexes:', error);
+      this.indexes.clear();
+    }
+  }
+
+  private saveIndexes(): void {
+    try {
+      const indexData: Record<string, import('./Storage').IndexDefinition> = {};
+      for (const [name, def] of this.indexes.entries()) {
+        indexData[name] = def;
+      }
+      writeFileSync(this.indexPath, JSON.stringify(indexData, null, 2));
+    } catch (error) {
+      console.warn('Failed to save indexes:', error);
+    }
+  }
+
+  private async validateUniqueConstraint(tableName: string, fields: string[]): Promise<void> {
+    const data = this.read();
+    const table = data?.[tableName];
+    if (!table || typeof table !== 'object') return;
+
+    const seen = new Set<string>();
+    
+    for (const [docId, doc] of Object.entries(table)) {
+      if (typeof doc === 'object' && doc !== null) {
+        const values = fields.map(field => (doc as any)[field]);
+        
+        // Skip if any field is null/undefined
+        if (values.some(v => v === undefined || v === null)) continue;
+        
+        const key = JSON.stringify(values);
+        if (seen.has(key)) {
+          throw new Error(`Unique constraint violation: Duplicate values found for fields [${fields.join(', ')}] in table ${tableName}`);
+        }
+        seen.add(key);
+      }
+    }
   }
 }
