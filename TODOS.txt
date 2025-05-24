@@ -1,0 +1,116 @@
+Critical Bugs
+
+  1. Race Condition in Table ID Generation (src/core/Table.ts:466-485)
+
+  - _getNextId() always reads from storage but doesn't handle concurrent access
+  - Multiple instances could generate duplicate IDs leading to data corruption
+  - Risk: High - data integrity issues
+
+  2. Binary Storage File Handle Leak (src/storage/BinaryStorage.ts:134-143)
+
+  - Missing try-catch around closeSync(this.fd) in destructor scenarios
+  - File descriptors may leak if process terminates unexpectedly
+  - Risk: Medium - resource exhaustion
+
+  3. WAL Lock Acquisition Race (src/storage/WALStorage.ts:154-181)
+
+  - Busy-wait loop can consume 100% CPU during lock contention
+  - No exponential backoff or maximum wait time
+  - Risk: High - performance degradation
+
+  Potential Bugs
+
+  4. BTree Cache Memory Leak (src/utils/BTree.ts:698-719)
+
+  - LRU eviction only removes one node when cache is full
+  - Can lead to gradual memory growth under high load
+  - Risk: Medium - memory exhaustion over time
+
+  5. Schema Validation Performance (src/core/SchemaTable.ts:41-62)
+
+  - O(n) linear scan for uniqueness validation on every insert
+  - No early termination or index utilization
+  - Risk: Low - performance issues with large datasets
+
+  6. Document Proxy Memory Overhead (src/core/Table.ts:17-50)
+
+  - Every document creates a Proxy object with complex getter/setter logic
+  - Significant memory overhead for large datasets
+  - Risk: Medium - memory usage concerns
+
+  Performance Enhancement Opportunities
+
+  7. B-Tree Node Serialization (src/utils/BTree.ts:37-82)
+
+  - Uses TextEncoder/TextDecoder for every key serialization
+  - Could cache encoder instances or use binary key formats
+  - Improvement: 15-20% faster inserts/lookups
+
+  8. WAL Operation Batching (src/storage/WALStorage.ts:145-152)
+
+  - Each operation writes to disk immediately
+  - No transaction batching or write coalescing
+  - Improvement: 2-3x faster bulk operations
+
+  9. LRU Cache Implementation (src/utils/LRUCache.ts:15-25)
+
+  - Deletes and re-inserts on every access (O(n) worst case)
+  - Could use doubly-linked list for O(1) operations
+  - Improvement: Better cache performance
+
+  10. Query Cache Key Generation (src/core/Table.ts:508-523)
+
+  - Uses toString() and string slicing for function hashing
+  - Inefficient and unreliable for cache keys
+  - Improvement: Better cache hit rates
+
+  Code Quality Issues
+
+  11. Error Handling Inconsistency
+
+  - Some functions throw errors, others return null/false
+  - Inconsistent error types across similar operations
+  - Impact: Developer experience and debugging
+
+  12. Magic Numbers (src/utils/BTree.ts:20-22)
+
+  - Hardcoded values like MAX_KEYS = 15, NODE_SIZE = 1024
+  - Should be configurable or documented with rationale
+  - Impact: Maintainability
+
+  13. Async/Sync Method Mixing
+
+  - Storage interface mixes sync and async methods
+  - Can lead to blocking operations in async contexts
+  - Impact: Performance and UX
+
+  Security Concerns
+
+  14. File Path Validation Missing
+
+  - No validation of user-provided file paths in storage constructors
+  - Could lead to path traversal vulnerabilities
+  - Risk: Medium - unauthorized file access
+
+  15. Lock File Permissions (src/storage/WALStorage.ts:154-191)
+
+  - Lock files created with default permissions
+  - Could be accessible by other users on system
+  - Risk: Low - information disclosure
+
+  Recommendations Priority
+
+  High Priority:
+  - Fix race condition in ID generation (#1)
+  - Implement proper WAL lock backoff (#3)
+  - Add file path validation (#14)
+
+  Medium Priority:
+  - Fix BTree cache eviction (#4)
+  - Improve error handling consistency (#11)
+  - Optimize WAL batching (#8)
+
+  Low Priority:
+  - Optimize B-tree serialization (#7)
+  - Improve LRU cache implementation (#9)
+  - Document magic numbers (#12)
