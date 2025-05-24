@@ -3,62 +3,55 @@ import { LRUCache } from "../utils/LRUCache";
 import type { QueryInstance } from "../query/QueryInstance";
 import type { Storage } from "../storage/Storage";
 
-// Document class that matches Python's Document
-export class Document extends Map<string, any> {
+// Optimized Document class without Proxy overhead
+export class Document {
   public readonly docId: number;
-  private _originalMap: Map<string, any>;
+  public readonly doc_id: number;
 
   constructor(value: Record<string, any>, docId: number) {
-    super(Object.entries(value));
     this.docId = docId;
-    this._originalMap = this;
+    this.doc_id = docId; // Alias for convenience
     
-    // Make it behave like a regular object
-    return new Proxy(this, {
-      get(target, prop) {
-        if (prop === 'docId' || prop === 'doc_id') return docId;
-        if (prop === '_originalMap') return target._originalMap;
-        if (typeof prop === 'string' && target.has(prop)) {
-          return target.get(prop);
-        }
-        return Reflect.get(target, prop);
-      },
-      set(target, prop, value) {
-        if (typeof prop === 'string' && prop !== 'docId' && prop !== 'doc_id') {
-          target.set(prop, value);
-          return true;
-        }
-        return Reflect.set(target, prop, value);
-      },
-      has(target, prop) {
-        if (prop === 'docId' || prop === 'doc_id') return true;
-        if (typeof prop === 'string') return target.has(prop);
-        return Reflect.has(target, prop);
-      },
-      ownKeys(target) {
-        return [...target.keys(), 'docId'];
-      },
-      getOwnPropertyDescriptor(target, prop) {
-        if (prop === 'docId' || prop === 'doc_id') {
-          return { value: docId, writable: false, enumerable: true, configurable: false };
-        }
-        if (typeof prop === 'string' && target.has(prop)) {
-          return { value: target.get(prop), writable: true, enumerable: true, configurable: true };
-        }
-        return Reflect.getOwnPropertyDescriptor(target, prop);
-      }
-    }) as any;
+    // Directly assign properties for optimal memory usage
+    Object.assign(this, value);
   }
 
-  // For JSON serialization
+  // For JSON serialization - exclude internal properties
   toJSON(): Record<string, any> {
     const obj: Record<string, any> = {};
-    // Access the original Map methods directly
-    const entries = this._originalMap ? this._originalMap.entries() : super.entries();
-    for (const [key, value] of entries) {
-      obj[key] = value;
+    for (const [key, value] of Object.entries(this)) {
+      if (key !== 'docId' && key !== 'doc_id') {
+        obj[key] = value;
+      }
     }
     return obj;
+  }
+
+  // Map-like interface for backward compatibility
+  get(key: string): any {
+    return (this as any)[key];
+  }
+
+  set(key: string, value: any): void {
+    if (key !== 'docId' && key !== 'doc_id') {
+      (this as any)[key] = value;
+    }
+  }
+
+  has(key: string): boolean {
+    return key in this;
+  }
+
+  keys(): string[] {
+    return Object.keys(this).filter(key => key !== 'docId' && key !== 'doc_id');
+  }
+
+  entries(): [string, any][] {
+    return Object.entries(this).filter(([key]) => key !== 'docId' && key !== 'doc_id');
+  }
+
+  values(): any[] {
+    return Object.values(this).slice(0, -2); // Exclude docId and doc_id
   }
 }
 

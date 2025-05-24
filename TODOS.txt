@@ -3,11 +3,6 @@ Critical Bugs
 
   Potential Bugs
 
-  5. Schema Validation Performance (src/core/SchemaTable.ts:41-62)
-
-  - O(n) linear scan for uniqueness validation on every insert
-  - No early termination or index utilization
-  - Risk: Low - performance issues with large datasets
 
   6. Document Proxy Memory Overhead (src/core/Table.ts:17-50)
 
