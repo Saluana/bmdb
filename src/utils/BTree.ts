@@ -149,7 +149,7 @@ export class BTreeNode {
   // Find child index for key in internal node
   findChildIndex(key: string): number {
     let i = 0;
-    while (i < this.keys.length && key > this.keys[i]) {
+    while (i < this.keys.length && key >= this.keys[i]) {
       i++;
     }
     return i;
@@ -462,9 +462,156 @@ export class BTree {
   }
 
   private rebalanceNode(node: BTreeNode): void {
-    // Simplified rebalancing - in a full implementation, this would
-    // involve borrowing from siblings or merging nodes
-    console.warn('Node rebalancing not fully implemented');
+    const parent = this.loadNode(node.parentOffset);
+    const nodeIndex = parent.children.indexOf(node.offset);
+    
+    // Try to borrow from left sibling
+    if (nodeIndex > 0) {
+      const leftSiblingOffset = parent.children[nodeIndex - 1];
+      const leftSibling = this.loadNode(leftSiblingOffset);
+      
+      if (leftSibling.keys.length > BTreeNode.MIN_KEYS) {
+        this.borrowFromLeftSibling(node, leftSibling, parent, nodeIndex - 1);
+        return;
+      }
+    }
+    
+    // Try to borrow from right sibling
+    if (nodeIndex < parent.children.length - 1) {
+      const rightSiblingOffset = parent.children[nodeIndex + 1];
+      const rightSibling = this.loadNode(rightSiblingOffset);
+      
+      if (rightSibling.keys.length > BTreeNode.MIN_KEYS) {
+        this.borrowFromRightSibling(node, rightSibling, parent, nodeIndex);
+        return;
+      }
+    }
+    
+    // Merge with sibling
+    if (nodeIndex > 0) {
+      // Merge with left sibling
+      const leftSiblingOffset = parent.children[nodeIndex - 1];
+      const leftSibling = this.loadNode(leftSiblingOffset);
+      this.mergeNodes(leftSibling, node, parent, nodeIndex - 1);
+    } else if (nodeIndex < parent.children.length - 1) {
+      // Merge with right sibling
+      const rightSiblingOffset = parent.children[nodeIndex + 1];
+      const rightSibling = this.loadNode(rightSiblingOffset);
+      this.mergeNodes(node, rightSibling, parent, nodeIndex);
+    }
+  }
+
+  private borrowFromLeftSibling(node: BTreeNode, leftSibling: BTreeNode, parent: BTreeNode, separatorIndex: number): void {
+    if (node.isLeaf && leftSibling.isLeaf) {
+      // Move last key/entry from left sibling to beginning of node
+      const lastKey = leftSibling.keys.pop()!;
+      const lastEntry = leftSibling.entries.pop()!;
+      
+      node.keys.unshift(lastKey);
+      node.entries.unshift(lastEntry);
+      
+      // Update parent separator
+      parent.keys[separatorIndex] = lastKey;
+    } else if (!node.isLeaf && !leftSibling.isLeaf) {
+      // Move separator down and last key from left sibling up
+      const separatorKey = parent.keys[separatorIndex];
+      const lastKey = leftSibling.keys.pop()!;
+      const lastChild = leftSibling.children.pop()!;
+      
+      node.keys.unshift(separatorKey);
+      node.children.unshift(lastChild);
+      
+      // Update parent separator
+      parent.keys[separatorIndex] = lastKey;
+      
+      // Update child parent pointer
+      const child = this.loadNode(lastChild);
+      child.parentOffset = node.offset;
+      this.saveNode(child);
+    }
+    
+    this.saveNode(leftSibling);
+    this.saveNode(node);
+    this.saveNode(parent);
+  }
+
+  private borrowFromRightSibling(node: BTreeNode, rightSibling: BTreeNode, parent: BTreeNode, separatorIndex: number): void {
+    if (node.isLeaf && rightSibling.isLeaf) {
+      // Move first key/entry from right sibling to end of node
+      const firstKey = rightSibling.keys.shift()!;
+      const firstEntry = rightSibling.entries.shift()!;
+      
+      node.keys.push(firstKey);
+      node.entries.push(firstEntry);
+      
+      // Update parent separator
+      parent.keys[separatorIndex] = rightSibling.keys[0] || firstKey;
+    } else if (!node.isLeaf && !rightSibling.isLeaf) {
+      // Move separator down and first key from right sibling up
+      const separatorKey = parent.keys[separatorIndex];
+      const firstKey = rightSibling.keys.shift()!;
+      const firstChild = rightSibling.children.shift()!;
+      
+      node.keys.push(separatorKey);
+      node.children.push(firstChild);
+      
+      // Update parent separator
+      parent.keys[separatorIndex] = firstKey;
+      
+      // Update child parent pointer
+      const child = this.loadNode(firstChild);
+      child.parentOffset = node.offset;
+      this.saveNode(child);
+    }
+    
+    this.saveNode(rightSibling);
+    this.saveNode(node);
+    this.saveNode(parent);
+  }
+
+  private mergeNodes(leftNode: BTreeNode, rightNode: BTreeNode, parent: BTreeNode, separatorIndex: number): void {
+    if (leftNode.isLeaf && rightNode.isLeaf) {
+      // Merge leaf nodes
+      leftNode.keys = leftNode.keys.concat(rightNode.keys);
+      leftNode.entries = leftNode.entries.concat(rightNode.entries);
+      leftNode.nextLeafOffset = rightNode.nextLeafOffset;
+    } else if (!leftNode.isLeaf && !rightNode.isLeaf) {
+      // Merge internal nodes with separator
+      const separatorKey = parent.keys[separatorIndex];
+      leftNode.keys.push(separatorKey);
+      leftNode.keys = leftNode.keys.concat(rightNode.keys);
+      leftNode.children = leftNode.children.concat(rightNode.children);
+      
+      // Update children parent pointers
+      for (const childOffset of rightNode.children) {
+        const child = this.loadNode(childOffset);
+        child.parentOffset = leftNode.offset;
+        this.saveNode(child);
+      }
+    }
+    
+    // Remove separator and right child from parent
+    parent.keys.splice(separatorIndex, 1);
+    parent.children.splice(separatorIndex + 1, 1);
+    
+    // Mark right node as free
+    this.freeNodeOffsets.push(rightNode.offset);
+    this.nodeCache.delete(rightNode.offset);
+    
+    this.saveNode(leftNode);
+    this.saveNode(parent);
+    
+    // Check if parent needs rebalancing
+    if (parent.needsRebalancing() && parent.offset !== this.rootOffset) {
+      this.rebalanceNode(parent);
+    } else if (parent.keys.length === 0 && parent.offset === this.rootOffset) {
+      // Root is empty, make left child the new root
+      this.rootOffset = leftNode.offset;
+      leftNode.parentOffset = -1;
+      this.saveNode(leftNode);
+      this.freeNodeOffsets.push(parent.offset);
+      this.nodeCache.delete(parent.offset);
+    }
   }
 
   private loadNode(offset: number): BTreeNode {
