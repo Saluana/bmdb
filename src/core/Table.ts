@@ -5,6 +5,133 @@ import { arrayPool, resultSetPool, PooledArray, PooledResultSet } from "../utils
 import type { QueryInstance } from "../query/QueryInstance";
 import type { Storage } from "../storage/Storage";
 
+export interface PaginatedResult<T> {
+  data: T[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  hasMore: boolean;
+  nextPage?: number;
+  previousPage?: number;
+}
+
+export interface LazyIteratorOptions {
+  pageSize?: number;
+  prefetchNext?: boolean;
+  cachePages?: boolean;
+}
+
+export interface ParallelQueryOptions {
+  chunkSize?: number;
+  maxConcurrency?: number;
+  useWorkerThreads?: boolean;
+}
+
+export interface QueryJob<T> {
+  id: string;
+  condition: QueryLike<T>;
+  chunk: Array<[string, Record<string, any>]>;
+  resolve: (results: Document[]) => void;
+  reject: (error: Error) => void;
+}
+
+export class LazyIterator<T> implements AsyncIterable<T> {
+  private table: Table<any>;
+  private condition?: QueryLike<any>;
+  private pageSize: number;
+  private prefetchNext: boolean;
+  private cachePages: boolean;
+  private pageCache = new Map<number, T[]>();
+  private totalCount?: number;
+
+  constructor(
+    table: Table<any>,
+    condition?: QueryLike<any>,
+    options: LazyIteratorOptions = {}
+  ) {
+    this.table = table;
+    this.condition = condition;
+    this.pageSize = options.pageSize ?? 50;
+    this.prefetchNext = options.prefetchNext ?? true;
+    this.cachePages = options.cachePages ?? true;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<T> {
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const result = await this.getPage(page);
+      
+      for (const item of result.data) {
+        yield item;
+      }
+
+      hasMore = result.hasMore;
+      page++;
+
+      if (this.prefetchNext && hasMore) {
+        setImmediate(() => this.getPage(page));
+      }
+    }
+  }
+
+  async getPage(page: number): Promise<PaginatedResult<T>> {
+    if (this.cachePages && this.pageCache.has(page)) {
+      const data = this.pageCache.get(page)!;
+      return this.buildPaginatedResult(data, page);
+    }
+
+    const offset = (page - 1) * this.pageSize;
+    const data = this.condition
+      ? this.table.search(this.condition)
+      : this.table.all();
+
+    const pageData = data.slice(offset, offset + this.pageSize) as T[];
+    
+    if (this.cachePages) {
+      this.pageCache.set(page, pageData);
+    }
+
+    this.totalCount = data.length;
+    return this.buildPaginatedResult(pageData, page);
+  }
+
+  private buildPaginatedResult(data: T[], page: number): PaginatedResult<T> {
+    const totalCount = this.totalCount ?? 0;
+    const totalPages = Math.ceil(totalCount / this.pageSize);
+    
+    return {
+      data,
+      page,
+      pageSize: this.pageSize,
+      totalCount,
+      totalPages,
+      hasMore: page < totalPages,
+      nextPage: page < totalPages ? page + 1 : undefined,
+      previousPage: page > 1 ? page - 1 : undefined
+    };
+  }
+
+  clearCache(): void {
+    this.pageCache.clear();
+    this.totalCount = undefined;
+  }
+
+  getStats(): {
+    cachedPages: number;
+    pageSize: number;
+    totalCount?: number;
+  } {
+    return {
+      cachedPages: this.pageCache.size,
+      pageSize: this.pageSize,
+      totalCount: this.totalCount
+    };
+  }
+}
+
 // Optimized Document class without Proxy overhead
 export class Document {
   public readonly docId: number;
@@ -163,6 +290,247 @@ export class Table<T extends Record<string, any> = any> {
   // Get all documents
   all(): Document[] {
     return Array.from(this);
+  }
+
+  // Paginated search for large result sets
+  searchPaginated(
+    cond: QueryLike<T>,
+    page: number = 1,
+    pageSize: number = 50
+  ): PaginatedResult<Document> {
+    if (page < 1) page = 1;
+    if (pageSize < 1) pageSize = 50;
+    if (pageSize > 1000) pageSize = 1000; // Prevent excessive memory usage
+
+    const allResults = this.search(cond);
+    const totalCount = allResults.length;
+    const totalPages = Math.ceil(totalCount / pageSize);
+    const offset = (page - 1) * pageSize;
+    const data = allResults.slice(offset, offset + pageSize);
+
+    return {
+      data,
+      page,
+      pageSize,
+      totalCount,
+      totalPages,
+      hasMore: page < totalPages,
+      nextPage: page < totalPages ? page + 1 : undefined,
+      previousPage: page > 1 ? page - 1 : undefined
+    };
+  }
+
+  // Get paginated results for all documents
+  allPaginated(
+    page: number = 1,
+    pageSize: number = 50
+  ): PaginatedResult<Document> {
+    if (page < 1) page = 1;
+    if (pageSize < 1) pageSize = 50;
+    if (pageSize > 1000) pageSize = 1000;
+
+    const table = this._readTable();
+    const entries = Object.entries(table);
+    const totalCount = entries.length;
+    const totalPages = Math.ceil(totalCount / pageSize);
+    const offset = (page - 1) * pageSize;
+    
+    const data: Document[] = [];
+    const pageEntries = entries.slice(offset, offset + pageSize);
+    
+    for (const [docIdStr, doc] of pageEntries) {
+      const docId = Table.documentIdClass(docIdStr);
+      data.push(new Table.documentClass(doc, docId) as Document);
+    }
+
+    return {
+      data,
+      page,
+      pageSize,
+      totalCount,
+      totalPages,
+      hasMore: page < totalPages,
+      nextPage: page < totalPages ? page + 1 : undefined,
+      previousPage: page > 1 ? page - 1 : undefined
+    };
+  }
+
+  // Create a lazy iterator for efficient large dataset traversal
+  lazy(
+    condition?: QueryLike<T>,
+    options: LazyIteratorOptions = {}
+  ): LazyIterator<Document> {
+    return new LazyIterator<Document>(this as any, condition, options);
+  }
+
+  // Parallel search for large datasets
+  async searchParallel(
+    cond: QueryLike<T>,
+    options: ParallelQueryOptions = {}
+  ): Promise<Document[]> {
+    const chunkSize = options.chunkSize ?? 1000;
+    const maxConcurrency = options.maxConcurrency ?? Math.min(4, Math.max(1, Math.floor(require('os').cpus().length / 2)));
+    
+    const table = this._readTable();
+    const entries = Object.entries(table);
+    
+    if (entries.length <= chunkSize) {
+      // Not worth parallelizing for small datasets
+      return this.search(cond);
+    }
+
+    // Split data into chunks
+    const chunks: Array<Array<[string, Record<string, any>]>> = [];
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      chunks.push(entries.slice(i, i + chunkSize));
+    }
+
+    // Process chunks in parallel with concurrency limit
+    const results: Document[] = [];
+    const semaphore = new Semaphore(maxConcurrency);
+    
+    const processChunk = async (chunk: Array<[string, Record<string, any>]>): Promise<Document[]> => {
+      await semaphore.acquire();
+      try {
+        const chunkResults: Document[] = [];
+        
+        for (const [docIdStr, doc] of chunk) {
+          let matches = false;
+          try {
+            if (typeof cond === 'function') {
+              matches = cond(doc);
+            } else if (cond && typeof cond === 'object' && 'test' in cond) {
+              matches = (cond as any).test(doc);
+            }
+          } catch (error) {
+            matches = false;
+          }
+          
+          if (matches) {
+            const docId = Table.documentIdClass(docIdStr);
+            chunkResults.push(new Table.documentClass(doc, docId) as Document);
+          }
+        }
+        
+        return chunkResults;
+      } finally {
+        semaphore.release();
+      }
+    };
+
+    // Execute all chunks in parallel
+    const chunkPromises = chunks.map(processChunk);
+    const chunkResults = await Promise.all(chunkPromises);
+    
+    // Flatten results
+    for (const chunkResult of chunkResults) {
+      results.push(...chunkResult);
+    }
+
+    return results;
+  }
+
+  // Parallel batch operations
+  async updateParallel(
+    updates: Array<{
+      fields: Partial<T> | ((doc: Record<string, any>) => void);
+      condition: QueryLike<T>;
+    }>,
+    options: ParallelQueryOptions = {}
+  ): Promise<number[]> {
+    const maxConcurrency = options.maxConcurrency ?? Math.min(4, Math.max(1, Math.floor(require('os').cpus().length / 2)));
+    const semaphore = new Semaphore(maxConcurrency);
+    const allUpdatedIds: number[] = [];
+
+    const processUpdate = async (update: {
+      fields: Partial<T> | ((doc: Record<string, any>) => void);
+      condition: QueryLike<T>;
+    }): Promise<number[]> => {
+      await semaphore.acquire();
+      try {
+        return this.update(update.fields, update.condition);
+      } finally {
+        semaphore.release();
+      }
+    };
+
+    // Execute updates in parallel
+    const updatePromises = updates.map(processUpdate);
+    const updateResults = await Promise.all(updatePromises);
+    
+    // Flatten results
+    for (const result of updateResults) {
+      allUpdatedIds.push(...result);
+    }
+
+    return allUpdatedIds;
+  }
+
+  // Parallel aggregation operations
+  async aggregateParallel<R>(
+    aggregator: (docs: Document[]) => R,
+    combiner: (results: R[]) => R,
+    condition?: QueryLike<T>,
+    options: ParallelQueryOptions = {}
+  ): Promise<R> {
+    const chunkSize = options.chunkSize ?? 1000;
+    const maxConcurrency = options.maxConcurrency ?? Math.min(4, Math.max(1, Math.floor(require('os').cpus().length / 2)));
+    
+    const table = this._readTable();
+    const entries = Object.entries(table);
+    
+    if (entries.length <= chunkSize) {
+      // Not worth parallelizing for small datasets
+      const docs = condition ? this.search(condition) : this.all();
+      return aggregator(docs);
+    }
+
+    // Split data into chunks
+    const chunks: Array<Array<[string, Record<string, any>]>> = [];
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      chunks.push(entries.slice(i, i + chunkSize));
+    }
+
+    const semaphore = new Semaphore(maxConcurrency);
+    
+    const processChunk = async (chunk: Array<[string, Record<string, any>]>): Promise<R> => {
+      await semaphore.acquire();
+      try {
+        const chunkDocs: Document[] = [];
+        
+        for (const [docIdStr, doc] of chunk) {
+          let include = true;
+          
+          if (condition) {
+            try {
+              if (typeof condition === 'function') {
+                include = condition(doc);
+              } else if (condition && typeof condition === 'object' && 'test' in condition) {
+                include = (condition as any).test(doc);
+              }
+            } catch (error) {
+              include = false;
+            }
+          }
+          
+          if (include) {
+            const docId = Table.documentIdClass(docIdStr);
+            chunkDocs.push(new Table.documentClass(doc, docId) as Document);
+          }
+        }
+        
+        return aggregator(chunkDocs);
+      } finally {
+        semaphore.release();
+      }
+    };
+
+    // Execute all chunks in parallel
+    const chunkPromises = chunks.map(processChunk);
+    const chunkResults = await Promise.all(chunkPromises);
+    
+    // Combine results
+    return combiner(chunkResults);
   }
 
   // Search for documents
@@ -666,5 +1034,43 @@ export class Table<T extends Record<string, any> = any> {
   // String representation
   toString(): string {
     return `<Table name='${this._name}', total=${this.length}, storage=${this._storage}>`;
+  }
+}
+
+// Semaphore for controlling concurrency
+class Semaphore {
+  private permits: number;
+  private waitQueue: Array<() => void> = [];
+
+  constructor(permits: number) {
+    this.permits = permits;
+  }
+
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve) => {
+      this.waitQueue.push(resolve);
+    });
+  }
+
+  release(): void {
+    this.permits++;
+    const next = this.waitQueue.shift();
+    if (next) {
+      this.permits--;
+      next();
+    }
+  }
+
+  getAvailable(): number {
+    return this.permits;
+  }
+
+  getWaiting(): number {
+    return this.waitQueue.length;
   }
 }

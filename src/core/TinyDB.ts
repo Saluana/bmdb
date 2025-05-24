@@ -1,4 +1,10 @@
-import { Table } from './Table';
+import {
+    Table,
+    type PaginatedResult,
+    LazyIterator,
+    type LazyIteratorOptions,
+    type ParallelQueryOptions,
+} from './Table';
 import { SchemaTable } from './SchemaTable';
 import type { Storage, StorageCtor } from '../storage/Storage';
 import { JSONStorage } from '../storage/JSONStorage';
@@ -30,26 +36,40 @@ export class TinyDB {
         // Validate storage class if provided
         if (options.storage) {
             if (typeof options.storage !== 'function') {
-                throw new Error('Storage option must be a constructor function');
+                throw new Error(
+                    'Storage option must be a constructor function'
+                );
             }
             StorageCls = options.storage as any;
             storageArgs = [pathOrOptions];
-        } else if (typeof pathOrOptions === 'object' && pathOrOptions !== null && pathOrOptions.storage) {
+        } else if (
+            typeof pathOrOptions === 'object' &&
+            pathOrOptions !== null &&
+            pathOrOptions.storage
+        ) {
             if (typeof pathOrOptions.storage !== 'function') {
-                throw new Error('Storage option must be a constructor function');
+                throw new Error(
+                    'Storage option must be a constructor function'
+                );
             }
             StorageCls = pathOrOptions.storage as any;
             storageArgs = [];
         } else if (typeof pathOrOptions === 'string') {
             storageArgs = [pathOrOptions];
         } else {
-            throw new Error('First argument must be a string path or options object');
+            throw new Error(
+                'First argument must be a string path or options object'
+            );
         }
 
         try {
             this._storage = new StorageCls(...storageArgs);
         } catch (error) {
-            throw new Error(`Failed to initialize storage: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(
+                `Failed to initialize storage: ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
 
         // Load existing data
@@ -57,15 +77,26 @@ export class TinyDB {
             const data = this._storage.read();
             if (data && typeof data === 'object') {
                 for (const [name, tableData] of Object.entries(data)) {
-                    if (typeof name === 'string' && tableData !== null && typeof tableData === 'object') {
-                        const table = new TinyDB.tableClass(this._storage, name);
+                    if (
+                        typeof name === 'string' &&
+                        tableData !== null &&
+                        typeof tableData === 'object'
+                    ) {
+                        const table = new TinyDB.tableClass(
+                            this._storage,
+                            name
+                        );
                         table._loadData(tableData as Record<string, any>);
                         this._tables.set(name, table);
                     }
                 }
             }
         } catch (error) {
-            throw new Error(`Failed to load existing data: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(
+                `Failed to load existing data: ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
 
         // Return proxy to forward unknown methods to default table
@@ -99,17 +130,25 @@ export class TinyDB {
         if (typeof name !== 'string' || name.trim() === '') {
             throw new Error('Table name must be a non-empty string');
         }
-        
+
         if (this._tables.has(name)) {
             return this._tables.get(name)! as Table<T>;
         }
 
         // Validate options
         if (options && typeof options === 'object') {
-            if (options.cacheSize !== undefined && (typeof options.cacheSize !== 'number' || options.cacheSize < 0)) {
-                throw new Error('cacheSize option must be a non-negative number');
+            if (
+                options.cacheSize !== undefined &&
+                (typeof options.cacheSize !== 'number' || options.cacheSize < 0)
+            ) {
+                throw new Error(
+                    'cacheSize option must be a non-negative number'
+                );
             }
-            if (options.persistEmpty !== undefined && typeof options.persistEmpty !== 'boolean') {
+            if (
+                options.persistEmpty !== undefined &&
+                typeof options.persistEmpty !== 'boolean'
+            ) {
                 throw new Error('persistEmpty option must be a boolean');
             }
         }
@@ -150,7 +189,9 @@ export class TinyDB {
         try {
             const data = this._storage.read();
             if (data && typeof data === 'object' && data !== null) {
-                return new Set(Object.keys(data).filter(key => typeof key === 'string'));
+                return new Set(
+                    Object.keys(data).filter((key) => typeof key === 'string')
+                );
             }
             return new Set();
         } catch (error) {
@@ -168,19 +209,28 @@ export class TinyDB {
         if (typeof name !== 'string' || name.trim() === '') {
             throw new Error('Table name must be a non-empty string');
         }
-        
+
         if (this._tables.has(name)) {
             this._tables.delete(name);
         }
 
         try {
             const data = this._storage.read();
-            if (data && typeof data === 'object' && data !== null && data[name]) {
+            if (
+                data &&
+                typeof data === 'object' &&
+                data !== null &&
+                data[name]
+            ) {
                 delete data[name];
                 this._storage.write(data);
             }
         } catch (error) {
-            throw new Error(`Failed to drop table '${name}': ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(
+                `Failed to drop table '${name}': ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
     }
 
@@ -225,7 +275,7 @@ export class TinyDB {
         if (!Array.isArray(documents)) {
             throw new Error('Documents must be an array');
         }
-        if (documents.some(doc => !doc || typeof doc !== 'object')) {
+        if (documents.some((doc) => !doc || typeof doc !== 'object')) {
             throw new Error('All documents must be objects');
         }
         return this.table(TinyDB.defaultTableName).insertMultiple(documents);
@@ -240,33 +290,65 @@ export class TinyDB {
     }
 
     get(cond?: any, docId?: number, docIds?: number[]): any {
-        if (docId !== undefined && (typeof docId !== 'number' || !Number.isInteger(docId) || docId < 0)) {
+        if (
+            docId !== undefined &&
+            (typeof docId !== 'number' || !Number.isInteger(docId) || docId < 0)
+        ) {
             throw new Error('docId must be a non-negative integer');
         }
-        if (docIds !== undefined && (!Array.isArray(docIds) || docIds.some(id => typeof id !== 'number' || !Number.isInteger(id) || id < 0))) {
+        if (
+            docIds !== undefined &&
+            (!Array.isArray(docIds) ||
+                docIds.some(
+                    (id) =>
+                        typeof id !== 'number' ||
+                        !Number.isInteger(id) ||
+                        id < 0
+                ))
+        ) {
             throw new Error('docIds must be an array of non-negative integers');
         }
         return this.table(TinyDB.defaultTableName).get(cond, docId, docIds);
     }
 
     contains(cond?: any, docId?: number): boolean {
-        if (docId !== undefined && (typeof docId !== 'number' || !Number.isInteger(docId) || docId < 0)) {
+        if (
+            docId !== undefined &&
+            (typeof docId !== 'number' || !Number.isInteger(docId) || docId < 0)
+        ) {
             throw new Error('docId must be a non-negative integer');
         }
         return this.table(TinyDB.defaultTableName).contains(cond, docId);
     }
 
-    update(fields: Record<string, any>, cond?: any, docIds?: number[]): number[] {
+    update(
+        fields: Record<string, any>,
+        cond?: any,
+        docIds?: number[]
+    ): number[] {
         if (!fields || typeof fields !== 'object') {
             throw new Error('Fields must be an object');
         }
-        if (docIds !== undefined && (!Array.isArray(docIds) || docIds.some(id => typeof id !== 'number' || !Number.isInteger(id) || id < 0))) {
+        if (
+            docIds !== undefined &&
+            (!Array.isArray(docIds) ||
+                docIds.some(
+                    (id) =>
+                        typeof id !== 'number' ||
+                        !Number.isInteger(id) ||
+                        id < 0
+                ))
+        ) {
             throw new Error('docIds must be an array of non-negative integers');
         }
         return this.table(TinyDB.defaultTableName).update(fields, cond, docIds);
     }
 
-    updateMultiple(updates: Array<[Partial<any> | ((doc: Record<string, any>) => void), any]>): number[] {
+    updateMultiple(
+        updates: Array<
+            [Partial<any> | ((doc: Record<string, any>) => void), any]
+        >
+    ): number[] {
         if (!Array.isArray(updates)) {
             throw new Error('Updates must be an array');
         }
@@ -281,7 +363,16 @@ export class TinyDB {
     }
 
     remove(cond?: any, docIds?: number[]): number[] {
-        if (docIds !== undefined && (!Array.isArray(docIds) || docIds.some(id => typeof id !== 'number' || !Number.isInteger(id) || id < 0))) {
+        if (
+            docIds !== undefined &&
+            (!Array.isArray(docIds) ||
+                docIds.some(
+                    (id) =>
+                        typeof id !== 'number' ||
+                        !Number.isInteger(id) ||
+                        id < 0
+                ))
+        ) {
             throw new Error('docIds must be an array of non-negative integers');
         }
         return this.table(TinyDB.defaultTableName).remove(cond, docIds);
@@ -299,12 +390,73 @@ export class TinyDB {
         return this.table(TinyDB.defaultTableName).clearCache();
     }
 
+    // Pagination methods
+    searchPaginated(
+        cond: any,
+        page: number = 1,
+        pageSize: number = 50
+    ): PaginatedResult<any> {
+        return this.table(TinyDB.defaultTableName).searchPaginated(
+            cond,
+            page,
+            pageSize
+        );
+    }
+
+    allPaginated(
+        page: number = 1,
+        pageSize: number = 50
+    ): PaginatedResult<any> {
+        return this.table(TinyDB.defaultTableName).allPaginated(page, pageSize);
+    }
+
+    lazy(
+        condition?: any,
+        options: LazyIteratorOptions = {}
+    ): LazyIterator<any> {
+        return this.table(TinyDB.defaultTableName).lazy(condition, options);
+    }
+
+    // Parallel query methods
+    async searchParallel(
+        cond: any,
+        options: ParallelQueryOptions = {}
+    ): Promise<any[]> {
+        return this.table(TinyDB.defaultTableName).searchParallel(cond, options);
+    }
+
+    async updateParallel(
+        updates: Array<{
+            fields: Partial<any> | ((doc: Record<string, any>) => void);
+            condition: any;
+        }>,
+        options: ParallelQueryOptions = {}
+    ): Promise<number[]> {
+        return this.table(TinyDB.defaultTableName).updateParallel(updates, options);
+    }
+
+    async aggregateParallel<R>(
+        aggregator: (docs: any[]) => R,
+        combiner: (results: R[]) => R,
+        condition?: any,
+        options: ParallelQueryOptions = {}
+    ): Promise<R> {
+        return this.table(TinyDB.defaultTableName).aggregateParallel(
+            aggregator,
+            combiner,
+            condition,
+            options
+        );
+    }
+
     // Connection pooling methods
-    enableConnectionPool(options: {
-        maxConnections?: number;
-        minConnections?: number;
-        maxIdleTime?: number;
-    } = {}): void {
+    enableConnectionPool(
+        options: {
+            maxConnections?: number;
+            minConnections?: number;
+            maxIdleTime?: number;
+        } = {}
+    ): void {
         if (this._connectionPool) {
             return; // Already enabled
         }
@@ -315,16 +467,21 @@ export class TinyDB {
             maxIdleTime: options.maxIdleTime || 30000,
             factory: () => {
                 // Create a new isolated table instance
-                return new TinyDB.tableClass(this._storage, TinyDB.defaultTableName);
+                return new TinyDB.tableClass(
+                    this._storage,
+                    TinyDB.defaultTableName
+                );
             },
             validator: (table) => {
                 // Basic validation - ensure table is still valid
                 return table && typeof table.search === 'function';
-            }
+            },
         });
     }
 
-    async withConnection<T>(operation: (table: Table<any>) => Promise<T> | T): Promise<T> {
+    async withConnection<T>(
+        operation: (table: Table<any>) => Promise<T> | T
+    ): Promise<T> {
         if (!this._connectionPool) {
             // No pooling, use direct table access
             return operation(this.table(TinyDB.defaultTableName));
@@ -372,7 +529,7 @@ export class TinyDB {
         }
         return {
             poolingEnabled: true,
-            ...this._connectionPool.getStats()
+            ...this._connectionPool.getStats(),
         };
     }
 

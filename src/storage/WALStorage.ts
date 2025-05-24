@@ -38,6 +38,10 @@ export class WALStorage implements Storage {
   private useMsgPack: boolean = false;
   private compactThreshold: number = 1000; // WAL operations before auto-compact
   private autoFlushInterval: NodeJS.Timeout | null = null;
+  private backgroundCompactionInterval: NodeJS.Timeout | null = null;
+  private compactionInProgress: boolean = false;
+  private lastCompactionTime: number = 0;
+  private minCompactionInterval: number = 60000; // 1 minute
 
   constructor(path: string, options: {
     batchSize?: number;
@@ -45,6 +49,9 @@ export class WALStorage implements Storage {
     useMsgPack?: boolean;
     compactThreshold?: number;
     autoFlushMs?: number;
+    backgroundCompaction?: boolean;
+    compactionIntervalMs?: number;
+    minCompactionIntervalMs?: number;
   } = {}) {
     this.dataPath = path;
     this.walPath = `${path}.wal`;
@@ -55,6 +62,7 @@ export class WALStorage implements Storage {
     this.maxBatchWaitMs = options.maxBatchWaitMs ?? 100;
     this.useMsgPack = options.useMsgPack ?? false;
     this.compactThreshold = options.compactThreshold ?? 1000;
+    this.minCompactionInterval = options.minCompactionIntervalMs ?? 60000;
     
     if (this.useMsgPack) {
       this.dataPath = this.dataPath.replace(/\.json$/, '.msgpack');
@@ -71,6 +79,14 @@ export class WALStorage implements Storage {
           this.flushBatch();
         }
       }, options.autoFlushMs);
+    }
+
+    // Background compaction setup
+    if (options.backgroundCompaction !== false) {
+      const compactionInterval = options.compactionIntervalMs ?? 300000; // 5 minutes default
+      this.backgroundCompactionInterval = setInterval(() => {
+        this.performBackgroundCompaction();
+      }, compactionInterval);
     }
   }
 
@@ -217,11 +233,7 @@ export class WALStorage implements Storage {
       if (currentWALSize >= this.compactThreshold) {
         // Schedule compaction for next tick to avoid blocking
         setImmediate(() => {
-          try {
-            this.compact();
-          } catch (error) {
-            console.warn('Auto-compaction failed:', error);
-          }
+          this.performBackgroundCompaction();
         });
       }
     } catch (error) {
@@ -511,60 +523,152 @@ export class WALStorage implements Storage {
   }
 
   compact(): void {
-    // Flush current stable state to main file
-    this.flush();
-    
-    // Remove committed transactions older than stable
-    const toRemove: number[] = [];
-    for (const [txid, tx] of this.transactions) {
-      if (txid < this.stableTxid && (tx.committed || tx.aborted)) {
-        toRemove.push(txid);
-      }
+    if (this.compactionInProgress) {
+      return; // Compaction already in progress
     }
-    
-    for (const txid of toRemove) {
-      this.transactions.delete(txid);
-      this.snapshots.delete(txid);
-    }
-    
-    // Rewrite WAL with only active/recent transactions
-    if (existsSync(this.walPath)) {
-      unlinkSync(this.walPath);
-    }
-    
-    // Write remaining transactions back to WAL
-    for (const [txid, tx] of this.transactions) {
-      const beginOp: WALOperation = {
-        type: 'begin',
-        txid,
-        timestamp: Date.now(),
-        data: {}
-      };
-      this.appendToWAL(beginOp);
+
+    this.compactionInProgress = true;
+    this.lastCompactionTime = Date.now();
+
+    try {
+      // Flush current stable state to main file
+      this.flush();
       
-      for (const op of tx.operations) {
-        this.appendToWAL(op);
+      // Remove committed transactions older than stable
+      const toRemove: number[] = [];
+      for (const [txid, tx] of this.transactions) {
+        if (txid < this.stableTxid && (tx.committed || tx.aborted)) {
+          toRemove.push(txid);
+        }
       }
       
-      if (tx.committed) {
-        const commitOp: WALOperation = {
-          type: 'commit',
-          txid,
-          timestamp: Date.now(),
-          data: {},
-          stable: true
-        };
-        this.appendToWAL(commitOp);
-      } else if (tx.aborted) {
-        const abortOp: WALOperation = {
-          type: 'abort',
+      for (const txid of toRemove) {
+        this.transactions.delete(txid);
+        this.snapshots.delete(txid);
+      }
+      
+      // Rewrite WAL with only active/recent transactions
+      if (existsSync(this.walPath)) {
+        unlinkSync(this.walPath);
+      }
+      
+      // Write remaining transactions back to WAL
+      for (const [txid, tx] of this.transactions) {
+        const beginOp: WALOperation = {
+          type: 'begin',
           txid,
           timestamp: Date.now(),
           data: {}
         };
-        this.appendToWAL(abortOp);
+        this.appendToWAL(beginOp);
+        
+        for (const op of tx.operations) {
+          this.appendToWAL(op);
+        }
+        
+        if (tx.committed) {
+          const commitOp: WALOperation = {
+            type: 'commit',
+            txid,
+            timestamp: Date.now(),
+            data: {},
+            stable: true
+          };
+          this.appendToWAL(commitOp);
+        } else if (tx.aborted) {
+          const abortOp: WALOperation = {
+            type: 'abort',
+            txid,
+            timestamp: Date.now(),
+            data: {}
+          };
+          this.appendToWAL(abortOp);
+        }
       }
+    } finally {
+      this.compactionInProgress = false;
     }
+  }
+
+  private performBackgroundCompaction(): void {
+    // Skip if compaction is already in progress
+    if (this.compactionInProgress) {
+      return;
+    }
+
+    // Check minimum interval between compactions
+    const now = Date.now();
+    if (now - this.lastCompactionTime < this.minCompactionInterval) {
+      return;
+    }
+
+    // Check if compaction is needed
+    const walSize = this.getWALSize();
+    const activeTransactions = Array.from(this.transactions.values())
+      .filter(tx => !tx.committed && !tx.aborted).length;
+    const oldTransactions = Array.from(this.transactions.values())
+      .filter(tx => (tx.committed || tx.aborted) && tx.txid < this.stableTxid).length;
+
+    // Compact if WAL is large enough or has many old transactions
+    const shouldCompact = walSize >= this.compactThreshold || 
+                         oldTransactions >= Math.max(10, this.compactThreshold / 10);
+
+    if (shouldCompact) {
+      // Run compaction in background to avoid blocking operations
+      setImmediate(() => {
+        try {
+          this.compact();
+        } catch (error) {
+          console.warn('Background compaction failed:', error);
+        }
+      });
+    }
+  }
+
+  // Force background compaction (useful for manual triggering)
+  forceBackgroundCompaction(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.compactionInProgress) {
+        resolve(); // Already in progress
+        return;
+      }
+
+      setImmediate(() => {
+        try {
+          this.compact();
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+  }
+
+  // Get compaction statistics
+  getCompactionStats(): {
+    compactionInProgress: boolean;
+    lastCompactionTime: number;
+    timeSinceLastCompaction: number;
+    walSize: number;
+    activeTransactions: number;
+    oldTransactions: number;
+    nextCompactionDue: number;
+  } {
+    const now = Date.now();
+    const activeTransactions = Array.from(this.transactions.values())
+      .filter(tx => !tx.committed && !tx.aborted).length;
+    const oldTransactions = Array.from(this.transactions.values())
+      .filter(tx => (tx.committed || tx.aborted) && tx.txid < this.stableTxid).length;
+    
+    return {
+      compactionInProgress: this.compactionInProgress,
+      lastCompactionTime: this.lastCompactionTime,
+      timeSinceLastCompaction: now - this.lastCompactionTime,
+      walSize: this.getWALSize(),
+      activeTransactions,
+      oldTransactions,
+      nextCompactionDue: Math.max(0, this.minCompactionInterval - (now - this.lastCompactionTime))
+    };
   }
 
   /**
@@ -581,6 +685,12 @@ export class WALStorage implements Storage {
       this.autoFlushInterval = null;
     }
     
+    // Clear background compaction interval
+    if (this.backgroundCompactionInterval !== null) {
+      clearInterval(this.backgroundCompactionInterval);
+      this.backgroundCompactionInterval = null;
+    }
+    
     // Clear any pending flush timeout
     if (this.flushTimeout !== null) {
       clearTimeout(this.flushTimeout);
@@ -589,7 +699,11 @@ export class WALStorage implements Storage {
     
     this.releaseLock();
     this.flush();
-    this.compact();
+    
+    // Final compaction on close
+    if (!this.compactionInProgress) {
+      this.compact();
+    }
   }
 
   // Recovery method to check WAL integrity
