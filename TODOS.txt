@@ -1,12 +1,6 @@
 Critical Bugs
 
 
-  3. WAL Lock Acquisition Race (src/storage/WALStorage.ts:154-181)
-
-  - Busy-wait loop can consume 100% CPU during lock contention
-  - No exponential backoff or maximum wait time
-  - Risk: High - performance degradation
-
   Potential Bugs
 
   4. BTree Cache Memory Leak (src/utils/BTree.ts:698-719)

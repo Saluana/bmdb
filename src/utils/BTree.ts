@@ -697,24 +697,28 @@ export class BTree {
 
   // Evict least recently used nodes if cache is too large
   private evictCacheIfNeeded(): void {
-    if (this.nodeCache.size < this.maxCacheSize) {
-      return;
-    }
-
-    // Find least recently used node
-    let lruOffset = -1;
-    let lruAccessTime = Infinity;
+    // Evict multiple nodes to maintain cache size well below limit
+    const targetSize = Math.floor(this.maxCacheSize * 0.8); // 80% of max size
     
-    for (const [offset, accessTime] of this.nodeCacheAccessOrder) {
-      if (accessTime < lruAccessTime) {
-        lruAccessTime = accessTime;
-        lruOffset = offset;
+    while (this.nodeCache.size >= targetSize) {
+      // Find least recently used node
+      let lruOffset = -1;
+      let lruAccessTime = Infinity;
+      
+      for (const [offset, accessTime] of this.nodeCacheAccessOrder) {
+        if (accessTime < lruAccessTime) {
+          lruAccessTime = accessTime;
+          lruOffset = offset;
+        }
       }
-    }
 
-    if (lruOffset !== -1) {
-      this.nodeCache.delete(lruOffset);
-      this.nodeCacheAccessOrder.delete(lruOffset);
+      if (lruOffset !== -1) {
+        this.nodeCache.delete(lruOffset);
+        this.nodeCacheAccessOrder.delete(lruOffset);
+      } else {
+        // Safety break if no LRU node found
+        break;
+      }
     }
   }
 
