@@ -154,8 +154,11 @@ export class WALStorage implements Storage {
   private acquireLock(): void {
     if (this.lockFd !== null) return; // Already locked
     
-    const maxRetries = 50;
-    const retryDelay = 100; // ms
+    const maxRetries = 20;
+    const baseDelay = 10; // ms
+    const maxDelay = 500; // ms
+    const maxWaitTime = 5000; // 5 seconds total
+    const startTime = Date.now();
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
@@ -164,13 +167,18 @@ export class WALStorage implements Storage {
         return; // Successfully acquired lock
       } catch (error: any) {
         if (error.code === 'EEXIST') {
-          // Lock file exists, wait and retry
+          // Check if we've exceeded maximum wait time
+          if (Date.now() - startTime > maxWaitTime) {
+            throw new Error(`Could not acquire write lock: timeout after ${maxWaitTime}ms`);
+          }
+          
+          // Lock file exists, wait and retry with exponential backoff
           if (attempt < maxRetries - 1) {
-            // Use synchronous sleep to avoid async complexity
-            const start = Date.now();
-            while (Date.now() - start < retryDelay) {
-              // Busy wait for the delay period
-            }
+            // Calculate delay with exponential backoff: baseDelay * 2^attempt, capped at maxDelay
+            const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+            
+            // Use proper sleep instead of busy wait
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
             continue;
           }
         }

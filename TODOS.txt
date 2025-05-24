@@ -1,10 +1,5 @@
 Critical Bugs
 
-  2. Binary Storage File Handle Leak (src/storage/BinaryStorage.ts:134-143)
-
-  - Missing try-catch around closeSync(this.fd) in destructor scenarios
-  - File descriptors may leak if process terminates unexpectedly
-  - Risk: Medium - resource exhaustion
 
   3. WAL Lock Acquisition Race (src/storage/WALStorage.ts:154-181)
 
