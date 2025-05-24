@@ -5,6 +5,7 @@ import { JSONStorage } from '../storage/JSONStorage';
 import type { Doc, JsonObject } from '../utils/types';
 import type { QueryInstance } from '../query/QueryInstance';
 import type { BmDbSchema } from '../schema/BmDbSchema';
+import { ConnectionPool, PoolManager } from '../utils/ConnectionPool';
 
 export class TinyDB {
     // Class variables (can be overridden)
@@ -15,6 +16,8 @@ export class TinyDB {
     private _storage: Storage;
     private _opened = true;
     private _tables = new Map<string, Table<any>>();
+    private _connectionPool: ConnectionPool<Table<any>> | null = null;
+    private _poolManager = new PoolManager();
 
     constructor(
         pathOrOptions: string | { storage?: StorageCtor } = 'db.json',
@@ -184,6 +187,10 @@ export class TinyDB {
     close(): void {
         this._opened = false;
         this._storage.close();
+        if (this._connectionPool) {
+            this._connectionPool.close();
+        }
+        this._poolManager.closeAll();
     }
 
     // Context manager support
@@ -290,6 +297,83 @@ export class TinyDB {
 
     clearCache(): void {
         return this.table(TinyDB.defaultTableName).clearCache();
+    }
+
+    // Connection pooling methods
+    enableConnectionPool(options: {
+        maxConnections?: number;
+        minConnections?: number;
+        maxIdleTime?: number;
+    } = {}): void {
+        if (this._connectionPool) {
+            return; // Already enabled
+        }
+
+        this._connectionPool = new ConnectionPool<Table<any>>({
+            maxConnections: options.maxConnections || 10,
+            minConnections: options.minConnections || 2,
+            maxIdleTime: options.maxIdleTime || 30000,
+            factory: () => {
+                // Create a new isolated table instance
+                return new TinyDB.tableClass(this._storage, TinyDB.defaultTableName);
+            },
+            validator: (table) => {
+                // Basic validation - ensure table is still valid
+                return table && typeof table.search === 'function';
+            }
+        });
+    }
+
+    async withConnection<T>(operation: (table: Table<any>) => Promise<T> | T): Promise<T> {
+        if (!this._connectionPool) {
+            // No pooling, use direct table access
+            return operation(this.table(TinyDB.defaultTableName));
+        }
+
+        const connection = await this._connectionPool.acquire();
+        try {
+            return await operation(connection.instance);
+        } finally {
+            await this._connectionPool.release(connection);
+        }
+    }
+
+    // Batch operations with connection pooling
+    async batchOperation<T>(
+        operations: Array<(table: Table<any>) => Promise<T> | T>
+    ): Promise<T[]> {
+        if (!this._connectionPool) {
+            // No pooling, execute sequentially
+            const table = this.table(TinyDB.defaultTableName);
+            const results: T[] = [];
+            for (const op of operations) {
+                results.push(await op(table));
+            }
+            return results;
+        }
+
+        // Execute operations concurrently using connection pool
+        const promises = operations.map(async (operation) => {
+            const connection = await this._connectionPool!.acquire();
+            try {
+                return await operation(connection.instance);
+            } finally {
+                await this._connectionPool!.release(connection);
+            }
+        });
+
+        return Promise.all(promises);
+    }
+
+    // Get connection pool statistics
+    getPoolStats(): any {
+        if (!this._connectionPool) {
+            return { poolingEnabled: false };
+        }
+        return {
+            poolingEnabled: true,
+            ...this._connectionPool.getStats()
+        };
     }
 
     // Representation

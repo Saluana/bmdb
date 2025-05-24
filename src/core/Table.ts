@@ -1,5 +1,7 @@
 import type { Doc, JsonObject } from "../utils/types";
 import { LRUCache } from "../utils/LRUCache";
+import { CopyOnWriteObject } from "../utils/CopyOnWrite";
+import { arrayPool, resultSetPool, PooledArray, PooledResultSet } from "../utils/ObjectPool";
 import type { QueryInstance } from "../query/QueryInstance";
 import type { Storage } from "../storage/Storage";
 
@@ -174,34 +176,41 @@ export class Table<T extends Record<string, any> = any> {
       }
     }
 
-    // Perform search
-    const results: Document[] = [];
-    const table = this._readTable();
-    
-    for (const [docIdStr, doc] of Object.entries(table)) {
-      let matches = false;
-      try {
-        if (typeof cond === 'function') {
-          matches = cond(doc);
-        } else if (cond && typeof cond === 'object' && 'test' in cond) {
-          matches = (cond as any).test(doc);
-        }
-      } catch (error) {
-        matches = false;
-      }
+    // Use pooled array for better memory management
+    const pooledArray = arrayPool.borrow();
+    try {
+      const table = this._readTable();
       
-      if (matches) {
-        const docId = Table.documentIdClass(docIdStr);
-        results.push(new Table.documentClass(doc, docId) as Document);
+      for (const [docIdStr, doc] of Object.entries(table)) {
+        let matches = false;
+        try {
+          if (typeof cond === 'function') {
+            matches = cond(doc);
+          } else if (cond && typeof cond === 'object' && 'test' in cond) {
+            matches = (cond as any).test(doc);
+          }
+        } catch (error) {
+          matches = false;
+        }
+        
+        if (matches) {
+          const docId = Table.documentIdClass(docIdStr);
+          pooledArray.push(new Table.documentClass(doc, docId) as Document);
+        }
       }
-    }
 
-    // Cache results if cacheable
-    if (cacheKey) {
-      this._queryCache.set(cacheKey, results.map(doc => this._cloneDocument(doc)));
-    }
+      // Convert to regular array
+      const results = [...pooledArray.array];
 
-    return results;
+      // Cache results if cacheable
+      if (cacheKey) {
+        this._queryCache.set(cacheKey, results.map(doc => this._cloneDocument(doc)));
+      }
+
+      return results;
+    } finally {
+      arrayPool.return(pooledArray);
+    }
   }
 
   // Get a single document or multiple documents by ID(s)
@@ -429,6 +438,19 @@ export class Table<T extends Record<string, any> = any> {
     this._queryCache.clear();
   }
 
+  // Get object pool statistics
+  getPoolStats(): {
+    arrayPool: any;
+    resultSetPool: any;
+    queryCache: any;
+  } {
+    return {
+      arrayPool: arrayPool.getStats(),
+      resultSetPool: resultSetPool.getStats(),
+      queryCache: this._queryCache.getStats()
+    };
+  }
+
   // Get length
   get length(): number {
     return Object.keys(this._readTable()).length;
@@ -531,7 +553,7 @@ export class Table<T extends Record<string, any> = any> {
 
   private _updateTable(updater: (table: Record<string, Record<string, any>>) => void): void {
     // Check if storage supports selective updates
-    if (this._storage.supportsFeature && this._storage.supportsFeature('batch')) {
+    if ((this._storage as any).supportsFeature && (this._storage as any).supportsFeature('batch')) {
       this._performSelectiveUpdate(updater);
     } else {
       this._performFullUpdate(updater);
@@ -548,9 +570,9 @@ export class Table<T extends Record<string, any> = any> {
     updater(table);
     
     // Use update() method if available for partial updates
-    if (typeof this._storage.update === 'function') {
+    if (typeof (this._storage as any).update === 'function') {
       tables[this._name] = table;
-      this._storage.update(tables);
+      (this._storage as any).update(tables);
     } else {
       // Fallback to full write
       tables[this._name] = table;
@@ -622,6 +644,23 @@ export class Table<T extends Record<string, any> = any> {
 
   private _cloneDocument(doc: Document): Document {
     return new Table.documentClass(doc.toJSON(), doc.docId) as Document;
+  }
+
+  // Create a copy-on-write isolated view of a document
+  private _createIsolatedDocument(docData: Record<string, any>, docId: number): Document {
+    const cowData = new CopyOnWriteObject(docData);
+    const isolatedDoc = new Table.documentClass(cowData.getRawData(), docId) as Document;
+    
+    // Override methods to use CoW semantics
+    const originalSet = isolatedDoc.set;
+    isolatedDoc.set = function(key: string, value: any) {
+      if (key !== 'docId' && key !== 'doc_id') {
+        cowData.set(key, value);
+        (this as any)[key] = value;
+      }
+    };
+    
+    return isolatedDoc;
   }
 
   // String representation

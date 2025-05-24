@@ -11,6 +11,8 @@ export class LRUCache<K, V> {
   private map = new Map<K, DoublyLinkedNode<K, V>>();
   private head: DoublyLinkedNode<K, V>;
   private tail: DoublyLinkedNode<K, V>;
+  private _hits = 0;
+  private _misses = 0;
 
   constructor(private capacity: number) {
     this.head = new DoublyLinkedNode(null as any, null as any);
@@ -55,9 +57,11 @@ export class LRUCache<K, V> {
   get(key: K): V | undefined {
     const node = this.map.get(key);
     if (node) {
+      this._hits++;
       this.moveToHead(node);
       return node.value;
     }
+    this._misses++;
     return undefined;
   }
 
@@ -86,5 +90,56 @@ export class LRUCache<K, V> {
     this.map.clear();
     this.head.next = this.tail;
     this.tail.prev = this.head;
+    this._hits = 0;
+    this._misses = 0;
+  }
+
+  // Cache statistics
+  get hitRate(): number {
+    const total = this._hits + this._misses;
+    return total === 0 ? 0 : this._hits / total;
+  }
+
+  get hits(): number {
+    return this._hits;
+  }
+
+  get misses(): number {
+    return this._misses;
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+
+  get maxSize(): number {
+    return this.capacity;
+  }
+
+  // Check if cache contains key without affecting LRU order
+  has(key: K): boolean {
+    return this.map.has(key);
+  }
+
+  // Get all keys in LRU order (most recent first)
+  keys(): K[] {
+    const keys: K[] = [];
+    let current = this.head.next;
+    while (current && current !== this.tail) {
+      keys.push(current.key);
+      current = current.next;
+    }
+    return keys;
+  }
+
+  // Get cache statistics
+  getStats(): { hits: number; misses: number; hitRate: number; size: number; maxSize: number } {
+    return {
+      hits: this._hits,
+      misses: this._misses,
+      hitRate: this.hitRate,
+      size: this.size,
+      maxSize: this.maxSize
+    };
   }
 }
