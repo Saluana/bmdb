@@ -14,8 +14,9 @@
  * - Reserved (8 bytes): For future use
  */
 
-import type { Storage } from './Storage';
+import type { Storage, VectorIndexDefinition } from './Storage';
 import type { JsonObject } from '../utils/types';
+import type { Vector, VectorSearchResult } from '../utils/VectorUtils';
 import { MessagePackUtil } from '../utils/MessagePackUtil';
 import { BTree, type BTreeEntry } from '../utils/BTree';
 import {
@@ -638,7 +639,25 @@ export class BinaryStorage implements Storage {
         return true;
     }
 
-    supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean {
+    // Vector operations (not supported by binary storage)
+    async createVectorIndex(): Promise<void> {
+        throw new Error('Vector operations not supported by this storage type');
+    }
+
+    async dropVectorIndex(): Promise<void> {
+        throw new Error('Vector operations not supported by this storage type');
+    }
+
+    async listVectorIndexes(): Promise<VectorIndexDefinition[]> {
+        throw new Error('Vector operations not supported by this storage type');
+    }
+
+    async vectorSearch(): Promise<VectorSearchResult[]> {
+        throw new Error('Vector operations not supported by this storage type');
+    }
+
+    supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking' | 'vectorSearch'): boolean {
+        if (feature === 'vectorSearch') return false;
         return ['async'].includes(feature);
     }
 }

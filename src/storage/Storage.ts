@@ -1,10 +1,19 @@
 import type { JsonObject } from "../utils/types";
+import type { Vector, VectorSearchResult } from "../utils/VectorUtils";
 
 export interface IndexDefinition {
   tableName: string;
   fields: string[];
   unique: boolean;
   compound?: boolean;
+  name?: string;
+}
+
+export interface VectorIndexDefinition {
+  tableName: string;
+  field: string;
+  dimensions: number;
+  algorithm: 'cosine' | 'euclidean' | 'dot' | 'manhattan';
   name?: string;
 }
 
@@ -23,8 +32,14 @@ export interface Storage {
   checkUnique(tableName: string, field: string, value: any, excludeDocId?: string): Promise<boolean>;
   checkCompoundUnique(tableName: string, fields: string[], values: any[], excludeDocId?: string): Promise<boolean>;
   
+  // Vector operations
+  createVectorIndex(tableName: string, field: string, dimensions: number, algorithm?: 'cosine' | 'euclidean' | 'dot' | 'manhattan'): Promise<void>;
+  dropVectorIndex(tableName: string, indexName: string): Promise<void>;
+  listVectorIndexes(tableName?: string): Promise<VectorIndexDefinition[]>;
+  vectorSearch(tableName: string, field: string, queryVector: Vector, options?: { limit?: number; threshold?: number }): Promise<VectorSearchResult[]>;
+  
   // Feature support
-  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean;
+  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking' | 'vectorSearch'): boolean;
   
   // File locking for concurrent access
   acquireWriteLock?(): Promise<void>;

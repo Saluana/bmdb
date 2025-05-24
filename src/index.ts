@@ -40,6 +40,8 @@ export type {
     JsonArray,
 } from './utils/types';
 export { LRUCache } from './utils/LRUCache';
+export { VectorUtils } from './utils/VectorUtils';
+export type { Vector, VectorSearchResult, VectorIndex } from './utils/VectorUtils';
 
 // Schema exports (V2)
 export { BmDbSchema, createSchema } from './schema/BmDbSchema';
@@ -51,7 +53,7 @@ export {
     createValidationError,
     createUniqueConstraintError
 } from './schema/errors';
-export { unique, primaryKey, compoundIndex, field, getFieldMeta } from './schema/helpers';
+export { unique, primaryKey, compoundIndex, field, vector, getFieldMeta } from './schema/helpers';
 export {
     getSchemaFieldMeta,
     isPrimaryKey,

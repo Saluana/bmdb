@@ -2,8 +2,9 @@
  * Contains the base class for middlewares and implementations.
  */
 
-import type { Storage } from "./storage/Storage";
+import type { Storage, VectorIndexDefinition } from "./storage/Storage";
 import type { JsonObject } from "./utils/types";
+import type { Vector, VectorSearchResult } from "./utils/VectorUtils";
 
 export abstract class Middleware implements Storage {
   protected _storage!: Storage;
@@ -54,7 +55,24 @@ export abstract class Middleware implements Storage {
     return this._storage.checkCompoundUnique(tableName, fields, values, excludeDocId);
   }
 
-  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean {
+  // Vector operations (delegated to underlying storage)
+  async createVectorIndex(tableName: string, field: string, dimensions: number, algorithm?: 'cosine' | 'euclidean' | 'dot' | 'manhattan'): Promise<void> {
+    return this._storage.createVectorIndex(tableName, field, dimensions, algorithm);
+  }
+
+  async dropVectorIndex(tableName: string, indexName: string): Promise<void> {
+    return this._storage.dropVectorIndex(tableName, indexName);
+  }
+
+  async listVectorIndexes(tableName?: string): Promise<VectorIndexDefinition[]> {
+    return this._storage.listVectorIndexes(tableName);
+  }
+
+  async vectorSearch(tableName: string, field: string, queryVector: Vector, options?: { limit?: number; threshold?: number }): Promise<VectorSearchResult[]> {
+    return this._storage.vectorSearch(tableName, field, queryVector, options);
+  }
+
+  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking' | 'vectorSearch'): boolean {
     return this._storage.supportsFeature(feature);
   }
 

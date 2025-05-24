@@ -2,6 +2,7 @@ import { Table, Document } from './Table';
 import type { Storage } from '../storage/Storage';
 import { BmDbSchema } from '../schema/BmDbSchema';
 import { createUniqueConstraintError } from '../schema/errors';
+import { VectorUtils, type Vector, type VectorSearchResult } from '../utils/VectorUtils';
 
 export class SchemaTable<T extends Record<string, any>> extends Table<T> {
     private _schema: BmDbSchema<T>;
@@ -27,6 +28,9 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
 
         // Validate schema
         const validatedData = this._schema.validate(data);
+
+        // Validate vector fields
+        this.validateVectorFields(validatedData);
 
         // Check uniqueness constraints synchronously (fallback to basic implementation)
         const uniqueFields = this._schema.getUniqueFields();
@@ -71,6 +75,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                     ? (document.toJSON() as T)
                     : document;
             const validatedData = this._schema.validate(data);
+            this.validateVectorFields(validatedData);
             validatedDocs.push(validatedData);
         }
 
@@ -137,6 +142,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         const data =
             document instanceof Document ? (document.toJSON() as T) : document;
         const validatedData = this._schema.validate(data);
+        this.validateVectorFields(validatedData);
 
         return super.upsert(validatedData, cond);
     }
@@ -162,6 +168,22 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         return this._schema.getPrimaryKey();
     }
 
+    getVectorFields(): Array<keyof T> {
+        return this._schema.getVectorFields();
+    }
+
+    private validateVectorFields(data: T): void {
+        const vectorFields = this._schema.getVectorFields();
+        for (const field of vectorFields) {
+            const fieldMeta = this._schema.getFieldMeta(field);
+            const value = data[field];
+            
+            if (value !== undefined && value !== null && fieldMeta?.isVector && fieldMeta.vectorDimensions) {
+                VectorUtils.validateVector(value, fieldMeta.vectorDimensions);
+            }
+        }
+    }
+
     // Index management methods
     async createIndex(field: keyof T, options?: { unique?: boolean }): Promise<void> {
         return this.storage.createIndex(this.name, String(field), options);
@@ -179,6 +201,40 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         return this.storage.listIndexes(this.name);
     }
 
+    // Vector operations
+    async createVectorIndex(field: keyof T, options?: { algorithm?: 'cosine' | 'euclidean' | 'dot' | 'manhattan' }): Promise<void> {
+        const fieldMeta = this._schema.getFieldMeta(field);
+        if (!fieldMeta?.isVector) {
+            throw new Error(`Field '${String(field)}' is not a vector field`);
+        }
+        
+        if (!fieldMeta.vectorDimensions) {
+            throw new Error(`Vector field '${String(field)}' does not specify dimensions`);
+        }
+
+        const algorithm = options?.algorithm || fieldMeta.vectorSearchAlgorithm || 'cosine';
+        return this.storage.createVectorIndex(this.name, String(field), fieldMeta.vectorDimensions, algorithm);
+    }
+
+    async dropVectorIndex(field: keyof T): Promise<void> {
+        const indexName = `${this.name}_${String(field)}_vector`;
+        return this.storage.dropVectorIndex(this.name, indexName);
+    }
+
+    async vectorSearch(field: keyof T, queryVector: Vector, options?: { limit?: number; threshold?: number }): Promise<VectorSearchResult[]> {
+        const fieldMeta = this._schema.getFieldMeta(field);
+        if (!fieldMeta?.isVector) {
+            throw new Error(`Field '${String(field)}' is not a vector field`);
+        }
+
+        if (!fieldMeta.vectorDimensions) {
+            throw new Error(`Vector field '${String(field)}' does not specify dimensions`);
+        }
+
+        VectorUtils.validateVector(queryVector, fieldMeta.vectorDimensions);
+        return this.storage.vectorSearch(this.name, String(field), queryVector, options);
+    }
+
     // Auto-create indexes based on schema metadata
     async autoCreateIndexes(): Promise<void> {
         // Create indexes for unique fields
@@ -194,6 +250,15 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                 unique: true, 
                 name: `${this.name}_compound_${groupName}` 
             });
+        }
+
+        // Create vector indexes
+        const allFields = this._schema.getAllFields();
+        for (const field of allFields) {
+            const meta = this._schema.getFieldMeta(field);
+            if (meta?.isVector) {
+                await this.createVectorIndex(field);
+            }
         }
     }
 

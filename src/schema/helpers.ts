@@ -37,3 +37,15 @@ export function compoundIndex<T extends ZodTypeAny>(schema: T, groupName: string
 export function field<T extends ZodTypeAny>(schema: T, meta: Partial<BmDbFieldMeta> = {}): T {
   return withMeta(schema, meta);
 }
+
+export function vector<T extends ZodTypeAny>(
+  schema: T, 
+  dimensions: number, 
+  algorithm: 'cosine' | 'euclidean' | 'dot' | 'manhattan' = 'cosine'
+): T {
+  return withMeta(schema, { 
+    isVector: true, 
+    vectorDimensions: dimensions,
+    vectorSearchAlgorithm: algorithm 
+  });
+}

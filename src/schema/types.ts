@@ -5,6 +5,9 @@ export interface BmDbFieldMeta {
   isUnique?: boolean;
   isPrimaryKey?: boolean;
   compoundIndexGroup?: string;
+  isVector?: boolean;
+  vectorDimensions?: number;
+  vectorSearchAlgorithm?: 'cosine' | 'euclidean' | 'dot' | 'manhattan';
 }
 
 export interface BmDbSchemaMeta {

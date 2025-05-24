@@ -1,6 +1,7 @@
-import type { Storage, IndexDefinition } from "./Storage";
+import type { Storage, IndexDefinition, VectorIndexDefinition } from "./Storage";
 import { deepFreeze } from "../utils/freeze";
 import type { JsonObject } from "../utils/types";
+import { VectorUtils, type Vector, type VectorSearchResult, type VectorIndex } from "../utils/VectorUtils";
 import { existsSync, readFileSync, writeFileSync, openSync, closeSync, unlinkSync, statSync } from "fs";
 import { promisify } from "util";
 
@@ -11,6 +12,8 @@ export class JSONStorage implements Storage {
   private lockFd: number | null = null;
   private readLockCount = 0;
   private writeLocked = false;
+  private vectorIndexes: Map<string, VectorIndexDefinition> = new Map();
+  private vectorData: Map<string, VectorIndex> = new Map(); // indexName -> vector index
   
   constructor(path: string = "db.json", opts: { indent?: number } = {}) {
     this.path = path;
@@ -39,6 +42,8 @@ export class JSONStorage implements Storage {
   write(obj: JsonObject): void {
     const frozen = deepFreeze(structuredClone(obj));
     writeFileSync(this.path, JSON.stringify(frozen, null, this.indent));
+    // Rebuild vector indexes after write
+    this.rebuildVectorIndexes();
   }
 
   close(): void {
@@ -152,8 +157,84 @@ export class JSONStorage implements Storage {
     }
   }
 
-  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean {
-    return ['compoundIndex', 'async', 'fileLocking'].includes(feature);
+  async createVectorIndex(tableName: string, field: string, dimensions: number, algorithm: 'cosine' | 'euclidean' | 'dot' | 'manhattan' = 'cosine'): Promise<void> {
+    await this.acquireWriteLock();
+    try {
+      const indexName = `${tableName}_${field}_vector`;
+      const indexDef: VectorIndexDefinition = {
+        tableName,
+        field,
+        dimensions,
+        algorithm,
+        name: indexName
+      };
+      
+      this.vectorIndexes.set(indexName, indexDef);
+      this.buildVectorIndex(indexDef);
+    } finally {
+      await this.releaseWriteLock();
+    }
+  }
+
+  async dropVectorIndex(tableName: string, indexName: string): Promise<void> {
+    await this.acquireWriteLock();
+    try {
+      this.vectorIndexes.delete(indexName);
+      this.vectorData.delete(indexName);
+    } finally {
+      await this.releaseWriteLock();
+    }
+  }
+
+  async listVectorIndexes(tableName?: string): Promise<VectorIndexDefinition[]> {
+    await this.acquireReadLock();
+    try {
+      return Array.from(this.vectorIndexes.values()).filter(
+        index => !tableName || index.tableName === tableName
+      );
+    } finally {
+      await this.releaseReadLock();
+    }
+  }
+
+  async vectorSearch(tableName: string, field: string, queryVector: Vector, options?: { limit?: number; threshold?: number }): Promise<VectorSearchResult[]> {
+    await this.acquireReadLock();
+    try {
+      const indexName = `${tableName}_${field}_vector`;
+      const vectorIndex = this.vectorData.get(indexName);
+      
+      if (!vectorIndex) {
+        throw new Error(`Vector index not found for table '${tableName}', field '${field}'`);
+      }
+
+      VectorUtils.validateVector(queryVector, vectorIndex.dimensions);
+      
+      const searchResults = VectorUtils.searchVectors(
+        queryVector,
+        vectorIndex.vectors,
+        vectorIndex.algorithm,
+        options?.limit,
+        options?.threshold
+      );
+
+      const data = this.read();
+      const table = data?.[tableName];
+      if (!table || typeof table !== 'object') {
+        return [];
+      }
+
+      return searchResults.map(result => ({
+        docId: result.docId,
+        score: result.score,
+        document: (table as any)[result.docId]
+      }));
+    } finally {
+      await this.releaseReadLock();
+    }
+  }
+
+  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking' | 'vectorSearch'): boolean {
+    return ['compoundIndex', 'async', 'fileLocking', 'vectorSearch'].includes(feature);
   }
 
   async acquireWriteLock(): Promise<void> {
@@ -282,5 +363,38 @@ export class JSONStorage implements Storage {
 
   private writeIndexes(indexes: Record<string, IndexDefinition>): void {
     writeFileSync(this.indexPath, JSON.stringify(indexes, null, this.indent));
+  }
+
+  private buildVectorIndex(indexDef: VectorIndexDefinition): void {
+    const vectorIndex = VectorUtils.createVectorIndex(
+      indexDef.field,
+      indexDef.dimensions,
+      indexDef.algorithm
+    );
+    
+    const data = this.read();
+    const table = data?.[indexDef.tableName];
+    if (table && typeof table === 'object') {
+      for (const [docId, doc] of Object.entries(table)) {
+        if (typeof doc === 'object' && doc !== null) {
+          const vectorValue = (doc as any)[indexDef.field];
+          if (Array.isArray(vectorValue)) {
+            try {
+              VectorUtils.addToIndex(vectorIndex, docId, vectorValue);
+            } catch (error) {
+              console.warn(`Skipping invalid vector for doc ${docId}: ${error}`);
+            }
+          }
+        }
+      }
+    }
+    
+    this.vectorData.set(indexDef.name!, vectorIndex);
+  }
+
+  private rebuildVectorIndexes(): void {
+    for (const indexDef of this.vectorIndexes.values()) {
+      this.buildVectorIndex(indexDef);
+    }
   }
 }

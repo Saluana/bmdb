@@ -1,5 +1,6 @@
-import type { Storage } from "./Storage";
+import type { Storage, VectorIndexDefinition } from "./Storage";
 import type { JsonObject } from "../utils/types";
+import type { Vector, VectorSearchResult } from "../utils/VectorUtils";
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from "fs";
 import { appendFileSync, openSync, closeSync, ftruncateSync } from "fs";
 
@@ -610,7 +611,25 @@ export class WALStorage implements Storage {
     return true;
   }
 
-  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean {
+  // Vector operations (not supported by WAL storage)
+  async createVectorIndex(): Promise<void> {
+    throw new Error('Vector operations not supported by this storage type');
+  }
+
+  async dropVectorIndex(): Promise<void> {
+    throw new Error('Vector operations not supported by this storage type');
+  }
+
+  async listVectorIndexes(): Promise<VectorIndexDefinition[]> {
+    throw new Error('Vector operations not supported by this storage type');
+  }
+
+  async vectorSearch(): Promise<VectorSearchResult[]> {
+    throw new Error('Vector operations not supported by this storage type');
+  }
+
+  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking' | 'vectorSearch'): boolean {
+    if (feature === 'vectorSearch') return false;
     return ['tx', 'async', 'compoundIndex'].includes(feature);
   }
 

@@ -1,10 +1,13 @@
-import type { Storage, IndexDefinition } from "./Storage";
+import type { Storage, IndexDefinition, VectorIndexDefinition } from "./Storage";
 import type { JsonObject } from "../utils/types";
+import { VectorUtils, type Vector, type VectorSearchResult, type VectorIndex } from "../utils/VectorUtils";
 
 export class MemoryStorage implements Storage {
   private data: JsonObject = {};
   private indexes: Map<string, IndexDefinition> = new Map();
   private indexedData: Map<string, Map<string, Set<string>>> = new Map(); // indexName -> value -> docIds
+  private vectorIndexes: Map<string, VectorIndexDefinition> = new Map();
+  private vectorData: Map<string, VectorIndex> = new Map(); // indexName -> vector index
   
   constructor() {
     // Initialize with empty data
@@ -19,6 +22,7 @@ export class MemoryStorage implements Storage {
     this.data = obj;
     // Rebuild indexes after write
     this.rebuildIndexes();
+    this.rebuildVectorIndexes();
   }
   
   close(): void {
@@ -93,8 +97,63 @@ export class MemoryStorage implements Storage {
     return true;
   }
 
-  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking'): boolean {
-    return ['compoundIndex', 'async'].includes(feature);
+  async createVectorIndex(tableName: string, field: string, dimensions: number, algorithm: 'cosine' | 'euclidean' | 'dot' | 'manhattan' = 'cosine'): Promise<void> {
+    const indexName = `${tableName}_${field}_vector`;
+    const indexDef: VectorIndexDefinition = {
+      tableName,
+      field,
+      dimensions,
+      algorithm,
+      name: indexName
+    };
+    
+    this.vectorIndexes.set(indexName, indexDef);
+    this.buildVectorIndex(indexDef);
+  }
+
+  async dropVectorIndex(tableName: string, indexName: string): Promise<void> {
+    this.vectorIndexes.delete(indexName);
+    this.vectorData.delete(indexName);
+  }
+
+  async listVectorIndexes(tableName?: string): Promise<VectorIndexDefinition[]> {
+    return Array.from(this.vectorIndexes.values()).filter(
+      index => !tableName || index.tableName === tableName
+    );
+  }
+
+  async vectorSearch(tableName: string, field: string, queryVector: Vector, options?: { limit?: number; threshold?: number }): Promise<VectorSearchResult[]> {
+    const indexName = `${tableName}_${field}_vector`;
+    const vectorIndex = this.vectorData.get(indexName);
+    
+    if (!vectorIndex) {
+      throw new Error(`Vector index not found for table '${tableName}', field '${field}'`);
+    }
+
+    VectorUtils.validateVector(queryVector, vectorIndex.dimensions);
+    
+    const searchResults = VectorUtils.searchVectors(
+      queryVector,
+      vectorIndex.vectors,
+      vectorIndex.algorithm,
+      options?.limit,
+      options?.threshold
+    );
+
+    const table = this.data[tableName];
+    if (!table || typeof table !== 'object') {
+      return [];
+    }
+
+    return searchResults.map(result => ({
+      docId: result.docId,
+      score: result.score,
+      document: (table as any)[result.docId]
+    }));
+  }
+
+  supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking' | 'vectorSearch'): boolean {
+    return ['compoundIndex', 'async', 'vectorSearch'].includes(feature);
   }
 
   private buildSingleIndex(indexDef: IndexDefinition): void {
@@ -128,5 +187,37 @@ export class MemoryStorage implements Storage {
     const values = fields.map(field => doc[field]);
     if (values.some(v => v === undefined || v === null)) return null;
     return JSON.stringify(values);
+  }
+
+  private buildVectorIndex(indexDef: VectorIndexDefinition): void {
+    const vectorIndex = VectorUtils.createVectorIndex(
+      indexDef.field,
+      indexDef.dimensions,
+      indexDef.algorithm
+    );
+    
+    const table = this.data[indexDef.tableName];
+    if (table && typeof table === 'object') {
+      for (const [docId, doc] of Object.entries(table)) {
+        if (typeof doc === 'object' && doc !== null) {
+          const vectorValue = (doc as any)[indexDef.field];
+          if (Array.isArray(vectorValue)) {
+            try {
+              VectorUtils.addToIndex(vectorIndex, docId, vectorValue);
+            } catch (error) {
+              console.warn(`Skipping invalid vector for doc ${docId}: ${error}`);
+            }
+          }
+        }
+      }
+    }
+    
+    this.vectorData.set(indexDef.name!, vectorIndex);
+  }
+
+  private rebuildVectorIndexes(): void {
+    for (const indexDef of this.vectorIndexes.values()) {
+      this.buildVectorIndex(indexDef);
+    }
   }
 }

@@ -123,6 +123,19 @@ export class BmDbSchema<T extends Record<string, any>> {
     return groups;
   }
 
+  getVectorFields(): Array<keyof T> {
+    const vectorFields: Array<keyof T> = [];
+    
+    for (const field of Object.keys(this.zodShape) as Array<keyof T>) {
+      const meta = this.getFieldMeta(field);
+      if (meta?.isVector) {
+        vectorFields.push(field);
+      }
+    }
+    
+    return vectorFields;
+  }
+
   getAllFields(): Array<keyof T> {
     return Object.keys(this.zodShape) as Array<keyof T>;
   }
