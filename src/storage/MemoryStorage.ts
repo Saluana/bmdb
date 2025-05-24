@@ -10,11 +10,11 @@ export class MemoryStorage implements Storage {
   }
 
   read(): JsonObject | null {
-    return this.data ? structuredClone(this.data) : null;
+    return this.data;
   }
   
   write(obj: JsonObject): void {
-    this.data = structuredClone(obj);
+    this.data = obj;
   }
   
   close(): void {

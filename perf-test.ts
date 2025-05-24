@@ -65,8 +65,8 @@ async function testStorage(
     const results: PerfResult[] = [];
     const db = new TinyDB(storageArgs[0] || 'test', { storage: StorageClass });
 
-    // Test 1: Bulk Insert
-    console.log(`Testing ${storageName} - Bulk Insert`);
+    // Test 1: Bulk Insert (Individual)
+    console.log(`Testing ${storageName} - Bulk Insert (Individual)`);
     const insertStart = performance.now();
 
     for (const doc of testData) {
@@ -77,12 +77,33 @@ async function testStorage(
     const insertTime = insertEnd - insertStart;
 
     results.push({
-        operation: 'Bulk Insert',
+        operation: 'Bulk Insert (Individual)',
         storage: storageName,
         operations: testData.length,
         totalTime: insertTime,
         opsPerSecond: (testData.length / insertTime) * 1000,
         avgTimePerOp: insertTime / testData.length,
+    });
+
+    // Clear data for next test
+    db.truncate();
+
+    // Test 1b: Bulk Insert (Batch)
+    console.log(`Testing ${storageName} - Bulk Insert (Batch)`);
+    const batchStart = performance.now();
+
+    db.insertMultiple(testData);
+
+    const batchEnd = performance.now();
+    const batchTime = batchEnd - batchStart;
+
+    results.push({
+        operation: 'Bulk Insert (Batch)',
+        storage: storageName,
+        operations: testData.length,
+        totalTime: batchTime,
+        opsPerSecond: (testData.length / batchTime) * 1000,
+        avgTimePerOp: batchTime / testData.length,
     });
 
     // Test 2: Sequential Reads

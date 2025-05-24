@@ -31,9 +31,17 @@ async function quickTest() {
   log('## Memory Storage');
   const memDb = new TinyDB('mem', { storage: MemoryStorage });
   
+  // Test individual inserts
   let start = performance.now();
   for (const doc of testData) memDb.insert(doc);
   let insertTime = performance.now() - start;
+  
+  memDb.truncate();
+  
+  // Test batch insert
+  start = performance.now();
+  memDb.insertMultiple(testData);
+  let batchInsertTime = performance.now() - start;
   
   start = performance.now();
   for (let i = 1; i <= 100; i++) memDb.search({ id: i });
@@ -43,7 +51,8 @@ async function quickTest() {
   for (let i = 1; i <= 100; i++) memDb.update({ age: 30 }, { id: i });
   let updateTime = performance.now() - start;
   
-  log(`- Insert 1000 docs: ${insertTime.toFixed(1)}ms (${(1000/insertTime*1000).toFixed(0)} ops/sec)`);
+  log(`- Insert 1000 docs (individual): ${insertTime.toFixed(1)}ms (${(1000/insertTime*1000).toFixed(0)} ops/sec)`);
+  log(`- Insert 1000 docs (batch): ${batchInsertTime.toFixed(1)}ms (${(1000/batchInsertTime*1000).toFixed(0)} ops/sec)`);
   log(`- Read 100 docs: ${readTime.toFixed(1)}ms (${(100/readTime*1000).toFixed(0)} ops/sec)`);
   log(`- Update 100 docs: ${updateTime.toFixed(1)}ms (${(100/updateTime*1000).toFixed(0)} ops/sec)`);
   log('');
