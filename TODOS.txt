@@ -6,11 +6,6 @@ Critical Bugs
 
   Performance Enhancement Opportunities
 
-  8. WAL Operation Batching (src/storage/WALStorage.ts:145-152)
-
-  - Each operation writes to disk immediately
-  - No transaction batching or write coalescing
-  - Improvement: 2-3x faster bulk operations
 
   9. LRU Cache Implementation (src/utils/LRUCache.ts:15-25)
 
