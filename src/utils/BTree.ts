@@ -388,6 +388,41 @@ export class BTree {
     this.insertIntoParent(leftNode, rightNode, middleKey);
   }
 
+  private splitInternalNodeAndInsert(node: BTreeNode, newKey: string, newChildOffset: number): void {
+    // Add the new key and child to the node temporarily
+    const insertIndex = node.findChildIndex(newKey);
+    node.keys.splice(insertIndex, 0, newKey);
+    node.children.splice(insertIndex + 1, 0, newChildOffset);
+
+    // Split the internal node
+    const { leftNode, rightNode, middleKey } = node.split();
+    
+    // Allocate offset for right node
+    rightNode.offset = this.allocateNodeOffset();
+    rightNode.parentOffset = leftNode.parentOffset;
+
+    // Update parent pointers for all children in both nodes
+    this.updateChildrenParents(leftNode);
+    this.updateChildrenParents(rightNode);
+
+    // Save both nodes
+    this.saveNode(leftNode);
+    this.saveNode(rightNode);
+
+    // Propagate split up the tree
+    this.insertIntoParent(leftNode, rightNode, middleKey);
+  }
+
+  private updateChildrenParents(node: BTreeNode): void {
+    if (!node.isLeaf) {
+      for (const childOffset of node.children) {
+        const child = this.loadNode(childOffset);
+        child.parentOffset = node.offset;
+        this.saveNode(child);
+      }
+    }
+  }
+
   private insertIntoParent(leftNode: BTreeNode, rightNode: BTreeNode, middleKey: string): void {
     if (leftNode.parentOffset === -1) {
       // Create new root
@@ -420,8 +455,8 @@ export class BTree {
         this.saveNode(rightNode);
       } else {
         // Parent is full, need to split it too
-        // This would require more complex logic for internal node splitting
-        throw new Error('Parent node splitting not implemented');
+        this.splitInternalNodeAndInsert(parent, middleKey, rightNode.offset);
+        this.saveNode(rightNode);
       }
     }
   }
