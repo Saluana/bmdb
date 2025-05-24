@@ -1,6 +1,7 @@
 import type { Storage, IndexDefinition, VectorIndexDefinition } from "./Storage";
 import type { JsonObject } from "../utils/types";
 import { VectorUtils, type Vector, type VectorSearchResult, type VectorIndex } from "../utils/VectorUtils";
+import { ObjectPool } from "../utils/ObjectPool";
 
 export class MemoryStorage implements Storage {
   private data: JsonObject = {};
@@ -9,11 +10,35 @@ export class MemoryStorage implements Storage {
   private vectorIndexes: Map<string, VectorIndexDefinition> = new Map();
   private vectorData: Map<string, VectorIndex> = new Map(); // indexName -> vector index
   
+  
   // Delta log for in-place updates
   private deltaLog: Map<string, Map<string, any>> = new Map(); // tableName -> docId -> changes
   private batchPending = false;
   private batchFlushTimeout: NodeJS.Timeout | null = null;
-  private readonly BATCH_FLUSH_DELAY = 5; // ms
+  private readonly BATCH_FLUSH_DELAY = 50; // ms - increased for better batching
+  private readonly MAX_BATCH_SIZE = 1000; // Force flush at size limit
+  private currentBatchSize = 0;
+  
+  // Object pools for memory efficiency
+  private docPool = new ObjectPool<Record<string, any>>({
+    maxSize: 100,
+    factory: () => ({}),
+    reset: (obj) => {
+      for (const key in obj) {
+        delete obj[key];
+      }
+    }
+  });
+  
+  private changesPool = new ObjectPool<Record<string, any>>({
+    maxSize: 100,
+    factory: () => ({}),
+    reset: (obj) => {
+      for (const key in obj) {
+        delete obj[key];
+      }
+    }
+  });
   
   constructor() {
     // Initialize with empty data
@@ -232,7 +257,19 @@ export class MemoryStorage implements Storage {
       // Merge with existing changes
       Object.assign(tableDeltas.get(docId)!, changes);
     } else {
-      tableDeltas.set(docId, { ...changes });
+      // Use pooled object for changes - hand-rolled copy
+      const pooledChanges = this.changesPool.borrow();
+      for (const k in changes) {
+        pooledChanges[k] = changes[k];
+      }
+      tableDeltas.set(docId, pooledChanges);
+      this.currentBatchSize++;
+    }
+
+    // Force flush if batch size limit reached
+    if (this.currentBatchSize >= this.MAX_BATCH_SIZE) {
+      this.flushDeltas();
+      return;
     }
 
     // Schedule flush if not already pending
@@ -250,8 +287,12 @@ export class MemoryStorage implements Storage {
     
     if (this.deltaLog.size === 0) {
       this.batchPending = false;
+      this.currentBatchSize = 0;
       return;
     }
+
+    // Track which indexes need updating
+    const indexesToUpdate = new Set<string>();
 
     // Apply all deltas to the main data structure
     for (const [tableName, tableDeltas] of this.deltaLog) {
@@ -261,22 +302,40 @@ export class MemoryStorage implements Storage {
       
       const table = this.data[tableName] as JsonObject;
       for (const [docId, changes] of tableDeltas) {
+        const oldDoc = table[docId];
+        
         if (changes === null) {
           // Deletion
           delete table[docId];
         } else {
-          // Update/Insert
+          // Update/Insert - hand-rolled loop for performance
           if (!table[docId]) {
             table[docId] = {};
           }
-          Object.assign(table[docId], changes);
+          const doc = table[docId] as any;
+          for (const k in changes) {
+            doc[k] = changes[k];
+          }
         }
+
+        // Update indexes immediately for write-through
+        this.updateIndexesForDocument(tableName, docId, oldDoc, table[docId]);
       }
     }
 
-    // Clear deltas
+
+    // Return pooled objects and clear deltas
+    for (const [tableName, tableDeltas] of this.deltaLog) {
+      for (const [docId, changes] of tableDeltas) {
+        if (changes !== null && typeof changes === 'object') {
+          this.changesPool.return(changes);
+        }
+      }
+    }
+    
     this.deltaLog.clear();
     this.batchPending = false;
+    this.currentBatchSize = 0;
   }
 
   // Override write operations to use delta log
@@ -305,5 +364,56 @@ export class MemoryStorage implements Storage {
     if (this.batchFlushTimeout) {
       clearTimeout(this.batchFlushTimeout);
     }
+    
+    // Clear object pools
+    this.docPool.clear();
+    this.changesPool.clear();
   }
+
+  // Write-through index update method - optimized hot path
+  private updateIndexesForDocument(tableName: string, docId: string, oldDoc: any, newDoc: any): void {
+    for (const indexDef of this.indexes.values()) {
+      if (indexDef.tableName !== tableName) continue;
+      
+      const indexName = indexDef.name!;
+      const idx = this.indexedData.get(indexName); // Hoist Map lookup
+      if (!idx) continue;
+      
+      // Inline single-field index key generation for common case
+      let oldKey: string | null = null;
+      let newKey: string | null = null;
+      
+      if (indexDef.fields.length === 1) {
+        // Fast path for single field indexes
+        const field = indexDef.fields[0];
+        const oldValue = oldDoc?.[field];
+        const newValue = newDoc?.[field];
+        
+        oldKey = (oldValue !== undefined && oldValue !== null) ? JSON.stringify([oldValue]) : null;
+        newKey = (newValue !== undefined && newValue !== null) ? JSON.stringify([newValue]) : null;
+      } else {
+        // Fallback to general case
+        oldKey = oldDoc ? this.getIndexKey(oldDoc, indexDef.fields) : null;
+        newKey = newDoc ? this.getIndexKey(newDoc, indexDef.fields) : null;
+      }
+      
+      // Remove from old key
+      if (oldKey !== null && idx.has(oldKey)) {
+        const docIds = idx.get(oldKey)!;
+        docIds.delete(docId);
+        if (docIds.size === 0) {
+          idx.delete(oldKey);
+        }
+      }
+      
+      // Add to new key
+      if (newKey !== null) {
+        if (!idx.has(newKey)) {
+          idx.set(newKey, new Set());
+        }
+        idx.get(newKey)!.add(docId);
+      }
+    }
+  }
+
 }
