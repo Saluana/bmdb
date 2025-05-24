@@ -3,92 +3,168 @@ import { deepFreeze } from "../utils/freeze";
 import type { JsonObject } from "../utils/types";
 import { VectorUtils, type Vector, type VectorSearchResult, type VectorIndex } from "../utils/VectorUtils";
 import { MessagePackUtil } from "../utils/MessagePackUtil";
-import { existsSync, readFileSync, writeFileSync, openSync, closeSync, unlinkSync, statSync } from "fs";
-import { promisify } from "util";
+import { 
+  existsSync, 
+  readFileSync, 
+  writeFileSync, 
+  openSync, 
+  closeSync, 
+  unlinkSync, 
+  statSync
+} from "fs";
 
+/**
+ * High-performance JSON storage that prioritizes speed over frequent durability.
+ * Uses in-memory operations with periodic snapshots for optimal performance.
+ */
 export class JSONStorage implements Storage {
   private path: string;
-  private indent = 0;
   private indexPath: string;
+  
   private lockFd: number | null = null;
   private readLockCount = 0;
   private writeLocked = false;
+  
   private vectorIndexes: Map<string, VectorIndexDefinition> = new Map();
-  private vectorData: Map<string, VectorIndex> = new Map(); // indexName -> vector index
+  private vectorData: Map<string, VectorIndex> = new Map();
+  
   private useMsgPack: boolean = false;
   
-  constructor(path: string = "db.json", opts: { indent?: number; useMsgPack?: boolean } = {}) {
+  // High-performance in-memory storage
+  private memoryData: JsonObject = {};
+  private isDirty: boolean = false;
+  
+  // Snapshot configuration
+  private snapshotInterval: number = 5000; // 5 seconds
+  private snapshotTimer: NodeJS.Timeout | null = null;
+  private maxDirtyOperations: number = 1000;
+  private dirtyOperations: number = 0;
+  
+  constructor(
+    path: string = "db.json", 
+    opts: { 
+      useMsgPack?: boolean;
+      snapshotIntervalMs?: number;
+      maxDirtyOperations?: number;
+    } = {}
+  ) {
     this.path = path;
-    this.indexPath = path.replace(/\.json$/, '.idx.json');
-    this.indent = opts.indent ?? 0;
+    this.indexPath = path.replace(/\.[^.]+$/, '.idx.json');
+    
     this.useMsgPack = opts.useMsgPack ?? false;
+    this.snapshotInterval = opts.snapshotIntervalMs ?? 5000;
+    this.maxDirtyOperations = opts.maxDirtyOperations ?? 1000;
     
     if (this.useMsgPack) {
       this.path = this.path.replace(/\.json$/, '.msgpack');
       this.indexPath = this.indexPath.replace(/\.json$/, '.msgpack');
     }
     
-    if (!existsSync(this.path)) {
-      if (this.useMsgPack) {
-        const emptyData = MessagePackUtil.encode({});
-        writeFileSync(this.path, emptyData);
-      } else {
-        writeFileSync(this.path, "{}\n");
+    this.initializeStorage();
+    this.startSnapshotTimer();
+  }
+
+  private initializeStorage(): void {
+    // Load existing data into memory
+    if (existsSync(this.path)) {
+      try {
+        if (this.useMsgPack) {
+          const rawData = readFileSync(this.path);
+          if (rawData && rawData.length > 0) {
+            this.memoryData = MessagePackUtil.decode(new Uint8Array(rawData)) as JsonObject || {};
+          }
+        } else {
+          const raw = readFileSync(this.path, 'utf-8');
+          if (raw && raw.trim() !== "") {
+            this.memoryData = JSON.parse(raw) as JsonObject || {};
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to load existing data, starting fresh:', error);
+        this.memoryData = {};
       }
     }
+    
+    // Create index file if it doesn't exist
     if (!existsSync(this.indexPath)) {
       if (this.useMsgPack) {
-        const emptyData = MessagePackUtil.encode({});
-        writeFileSync(this.indexPath, emptyData);
+        writeFileSync(this.indexPath, MessagePackUtil.encode({}));
       } else {
         writeFileSync(this.indexPath, "{}");
       }
     }
   }
 
-  read(): JsonObject | null {
-    if (this.useMsgPack) {
-      try {
-        const data = readFileSync(this.path);
-        if (!data || data.length === 0) {
-          return null;
-        }
-        return MessagePackUtil.decode(new Uint8Array(data)) as JsonObject;
-      } catch {
-        return null;
+  private startSnapshotTimer(): void {
+    this.snapshotTimer = setInterval(() => {
+      if (this.isDirty) {
+        this.createSnapshot();
       }
-    } else {
-      const raw = readFileSync(this.path, 'utf-8');
-      if (!raw || raw.trim() === "") {
-        return null;
+    }, this.snapshotInterval);
+  }
+
+  private createSnapshot(): void {
+    if (!this.isDirty) return;
+    
+    try {
+      const frozen = deepFreeze(this.memoryData);
+      
+      if (this.useMsgPack) {
+        const data = MessagePackUtil.encode(frozen);
+        writeFileSync(this.path, data);
+      } else {
+        writeFileSync(this.path, JSON.stringify(frozen, null, 0));
       }
-      try {
-        return JSON.parse(raw) as JsonObject;
-      } catch {
-        return null;
-      }
+      
+      this.isDirty = false;
+      this.dirtyOperations = 0;
+    } catch (error) {
+      console.error('Error creating snapshot:', error);
     }
   }
 
+  read(): JsonObject | null {
+    // Always return a deep copy to prevent external mutations
+    return JSON.parse(JSON.stringify(this.memoryData));
+  }
+
   write(obj: JsonObject): void {
-    const frozen = deepFreeze(obj);
-    if (this.useMsgPack) {
-      const data = MessagePackUtil.encode(frozen);
-      writeFileSync(this.path, data);
-    } else {
-      writeFileSync(this.path, JSON.stringify(frozen, null, this.indent));
-    }
+    // Merge data into memory
+    this.memoryData = { ...this.memoryData, ...obj };
+    this.markDirty();
+    
     // Rebuild vector indexes after write
     this.rebuildVectorIndexes();
   }
 
+  private markDirty(): void {
+    this.isDirty = true;
+    this.dirtyOperations++;
+    
+    // Force snapshot if too many dirty operations
+    if (this.dirtyOperations >= this.maxDirtyOperations) {
+      this.createSnapshot();
+    }
+  }
+
   close(): void {
+    if (this.snapshotTimer) {
+      clearInterval(this.snapshotTimer);
+      this.snapshotTimer = null;
+    }
+    
+    // Final snapshot
+    if (this.isDirty) {
+      this.createSnapshot();
+    }
+    
     if (this.lockFd !== null) {
       closeSync(this.lockFd);
       this.lockFd = null;
     }
   }
 
+  // Index operations
   async createIndex(tableName: string, field: string, options?: { unique?: boolean }): Promise<void> {
     await this.acquireWriteLock();
     try {
@@ -155,8 +231,7 @@ export class JSONStorage implements Storage {
   async checkUnique(tableName: string, field: string, value: any, excludeDocId?: string): Promise<boolean> {
     await this.acquireReadLock();
     try {
-      const data = this.read();
-      const table = data?.[tableName];
+      const table = this.memoryData[tableName];
       if (!table || typeof table !== 'object') return true;
 
       for (const [docId, doc] of Object.entries(table)) {
@@ -174,8 +249,7 @@ export class JSONStorage implements Storage {
   async checkCompoundUnique(tableName: string, fields: string[], values: any[], excludeDocId?: string): Promise<boolean> {
     await this.acquireReadLock();
     try {
-      const data = this.read();
-      const table = data?.[tableName];
+      const table = this.memoryData[tableName];
       if (!table || typeof table !== 'object') return true;
 
       for (const [docId, doc] of Object.entries(table)) {
@@ -193,6 +267,7 @@ export class JSONStorage implements Storage {
     }
   }
 
+  // Vector operations
   async createVectorIndex(tableName: string, field: string, dimensions: number, algorithm: 'cosine' | 'euclidean' | 'dot' | 'manhattan' = 'cosine'): Promise<void> {
     await this.acquireWriteLock();
     try {
@@ -253,8 +328,7 @@ export class JSONStorage implements Storage {
         options?.threshold
       );
 
-      const data = this.read();
-      const table = data?.[tableName];
+      const table = this.memoryData[tableName];
       if (!table || typeof table !== 'object') {
         return [];
       }
@@ -273,10 +347,10 @@ export class JSONStorage implements Storage {
     return ['compoundIndex', 'async', 'fileLocking', 'vectorSearch'].includes(feature);
   }
 
+  // Locking operations
   async acquireWriteLock(): Promise<void> {
     if (this.writeLocked) return;
     
-    // Wait for any read locks to release (with timeout)
     let waitTime = 0;
     while (this.readLockCount > 0 && waitTime < 1000) {
       await new Promise(resolve => setTimeout(resolve, 10));
@@ -287,33 +361,28 @@ export class JSONStorage implements Storage {
       throw new Error('Timeout waiting for read locks to release');
     }
     
-    // Simple file-based locking with timeout and stale lock detection
     const lockFile = this.path + '.write.lock';
     let attempts = 0;
-    const maxAttempts = 100; // 1 second timeout
+    const maxAttempts = 100;
     
     while (existsSync(lockFile) && attempts < maxAttempts) {
-      // Check if lock is stale (older than 5 seconds)
       try {
         const lockContent = readFileSync(lockFile, 'utf-8');
         const lockPid = parseInt(lockContent);
         
-        // If it's our own process, we can safely remove it
         if (lockPid === process.pid) {
           unlinkSync(lockFile);
           break;
         }
         
-        // Check if process is still running (this is platform specific, so we'll use timeout)
         const stats = statSync(lockFile);
         const lockAge = Date.now() - stats.mtime.getTime();
-        if (lockAge > 5000) { // 5 seconds
+        if (lockAge > 5000) {
           console.warn('Removing stale lock file');
           unlinkSync(lockFile);
           break;
         }
       } catch {
-        // Lock file was removed or is corrupted, continue
         break;
       }
       
@@ -348,28 +417,24 @@ export class JSONStorage implements Storage {
   }
 
   async acquireReadLock(): Promise<void> {
-    // If we already have a write lock, we can proceed (same process)
     if (this.writeLocked) {
       this.readLockCount++;
       return;
     }
     
-    // Wait for write lock to release (with timeout)
     const lockFile = this.path + '.write.lock';
     let attempts = 0;
-    const maxAttempts = 100; // 1 second timeout
+    const maxAttempts = 100;
     
     while (existsSync(lockFile) && attempts < maxAttempts) {
-      // Check if it's our own lock
       try {
         const lockContent = readFileSync(lockFile, 'utf-8');
         const lockPid = parseInt(lockContent);
         if (lockPid === process.pid) {
-          // It's our own lock, we can proceed
           break;
         }
       } catch {
-        // Lock file issue, continue waiting
+        // Continue waiting
       }
       
       await new Promise(resolve => setTimeout(resolve, 10));
@@ -410,7 +475,7 @@ export class JSONStorage implements Storage {
       const data = MessagePackUtil.encode(indexes);
       writeFileSync(this.indexPath, data);
     } else {
-      writeFileSync(this.indexPath, JSON.stringify(indexes, null, this.indent));
+      writeFileSync(this.indexPath, JSON.stringify(indexes, null, 0));
     }
   }
 
@@ -421,8 +486,7 @@ export class JSONStorage implements Storage {
       indexDef.algorithm
     );
     
-    const data = this.read();
-    const table = data?.[indexDef.tableName];
+    const table = this.memoryData[indexDef.tableName];
     if (table && typeof table === 'object') {
       for (const [docId, doc] of Object.entries(table)) {
         if (typeof doc === 'object' && doc !== null) {
@@ -447,16 +511,38 @@ export class JSONStorage implements Storage {
     }
   }
 
-  // Optimized update method that only writes changed data
+  // Optimized update method
   update(obj: JsonObject): void {
-    const current = this.read();
-    if (!current) {
-      this.write(obj);
-      return;
+    // Deep merge for incremental updates
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === 'object' && value !== null && this.memoryData[key] && typeof this.memoryData[key] === 'object') {
+        this.memoryData[key] = { ...this.memoryData[key] as any, ...value };
+      } else {
+        this.memoryData[key] = value;
+      }
     }
+    
+    this.markDirty();
+    this.rebuildVectorIndexes();
+  }
 
-    // Perform shallow merge to avoid unnecessary deep cloning
-    const updated = { ...current, ...obj };
-    this.write(updated);
+  // Performance monitoring
+  getStats(): {
+    isDirty: boolean;
+    dirtyOperations: number;
+    memorySize: number;
+    snapshotInterval: number;
+  } {
+    return {
+      isDirty: this.isDirty,
+      dirtyOperations: this.dirtyOperations,
+      memorySize: JSON.stringify(this.memoryData).length,
+      snapshotInterval: this.snapshotInterval
+    };
+  }
+
+  // Force snapshot creation
+  forceSnapshot(): void {
+    this.createSnapshot();
   }
 }
