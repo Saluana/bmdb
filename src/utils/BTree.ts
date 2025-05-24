@@ -464,4 +464,14 @@ export class BTree {
   setNextNodeOffset(offset: number): void {
     this.nextNodeOffset = offset;
   }
+
+  // Get next node offset for compaction
+  getNextNodeOffset(): number {
+    return this.nextNodeOffset;
+  }
+
+  // Clear node cache (useful after compaction when offsets change)
+  clearCache(): void {
+    this.nodeCache.clear();
+  }
 }

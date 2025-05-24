@@ -25,6 +25,7 @@ import {
     readSync,
     writeSync,
     fstatSync,
+    ftruncateSync,
 } from 'fs';
 
 const MAGIC_NUMBER = 0x424d4442; // "BMDB"
@@ -89,9 +90,9 @@ export class BinaryStorage implements Storage {
             }
 
             // Convert to expected format
-            for (const [tableName, documents] of tableMap) {
+            tableMap.forEach((documents, tableName) => {
                 result[tableName] = documents;
-            }
+            });
 
             return result;
         } catch (error) {
@@ -386,23 +387,200 @@ export class BinaryStorage implements Storage {
         documentCount: number;
         btreeNodes: number;
         freeSpaceOffset: number;
+        wastedSpace: number;
+        fragmentationRatio: number;
     } {
+        const btreeNodes = Math.floor(
+            (this.header.nextNodeOffset - HEADER_SIZE) / 1024
+        );
+        
+        // Calculate wasted space (gaps between used areas)
+        const usedDocumentSpace = this.header.freeSpaceOffset - (HEADER_SIZE + this.header.reserved1);
+        const wastedSpace = this.fileSize - this.header.freeSpaceOffset;
+        const fragmentationRatio = this.fileSize > 0 ? wastedSpace / this.fileSize : 0;
+
         return {
             fileSize: this.fileSize,
             documentCount: this.header.documentCount,
-            btreeNodes: Math.floor(
-                (this.header.nextNodeOffset - HEADER_SIZE) / 1024
-            ),
+            btreeNodes,
             freeSpaceOffset: this.header.freeSpaceOffset,
+            wastedSpace,
+            fragmentationRatio,
         };
     }
 
-    // Compact file by removing fragmentation (simplified implementation)
+    // Compact file by removing fragmentation
     compact(): void {
-        console.warn('File compaction not implemented');
-        // In a full implementation, this would:
-        // 1. Read all documents
-        // 2. Rebuild the file with consecutive document storage
-        // 3. Update B-tree with new offsets
+        if (this.fd === -1) {
+            throw new Error('Storage not initialized');
+        }
+
+        try {
+            // 1. Read all existing documents
+            const allEntries = this.btree.getAllEntries();
+            if (allEntries.length === 0) {
+                // No documents to compact, just reset free space
+                this.resetToMinimalSize();
+                return;
+            }
+
+            // 2. Read document data for all entries
+            const documentData = new Map<string, { data: any; entry: BTreeEntry }>();
+            
+            for (const entry of allEntries) {
+                try {
+                    const data = this.readDocumentData(entry.offset, entry.length);
+                    documentData.set(entry.key, { data, entry });
+                } catch (error) {
+                    console.warn(`Failed to read document with key ${entry.key}, skipping:`, error instanceof Error ? error.message : String(error));
+                    // Skip corrupted documents during compaction
+                }
+            }
+
+            // 3. Calculate B-tree area size needed
+            const btreeAreaSize = this.calculateRequiredBTreeSpace(documentData.size);
+            const documentAreaStart = HEADER_SIZE + btreeAreaSize;
+
+            // 4. Create new B-tree for rebuilt file
+            const newBTree = new BTree(
+                (offset) => this.readNodeFromFile(offset),
+                (offset, data) => this.writeNodeToFile(offset, data)
+            );
+
+            // 5. Reset file structure
+            this.header.rootNodeOffset = -1;
+            this.header.nextNodeOffset = HEADER_SIZE;
+            this.header.documentCount = 0;
+            this.header.freeSpaceOffset = documentAreaStart;
+            this.header.reserved1 = btreeAreaSize;
+
+            // 6. Write documents consecutively starting from document area
+            let currentOffset = documentAreaStart;
+            const newEntries: BTreeEntry[] = [];
+
+            // Sort entries by key for consistent layout
+            const sortedEntries = Array.from(documentData.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+            for (const [key, { data }] of sortedEntries) {
+                // Serialize document
+                const serializedData = MessagePackUtil.encode(data);
+                
+                // Ensure file is large enough
+                const requiredSize = currentOffset + serializedData.length;
+                if (requiredSize > this.fileSize) {
+                    const padding = Buffer.alloc(requiredSize - this.fileSize);
+                    writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+                    this.fileSize = requiredSize;
+                }
+
+                // Write document data
+                const buffer = Buffer.from(serializedData);
+                writeSync(this.fd, buffer, 0, serializedData.length, currentOffset);
+
+                // Create new entry
+                const newEntry: BTreeEntry = {
+                    key,
+                    offset: currentOffset,
+                    length: serializedData.length
+                };
+
+                newEntries.push(newEntry);
+                currentOffset += serializedData.length;
+            }
+
+            // 7. Build new B-tree with consecutive entries
+            for (const entry of newEntries) {
+                newBTree.insert(entry);
+                this.header.documentCount++;
+            }
+
+            // 8. Update header with new B-tree root
+            const newRootOffset = newBTree.getRootOffset();
+            this.header.rootNodeOffset = newRootOffset;
+            this.header.nextNodeOffset = newBTree.getNextNodeOffset();
+            this.header.freeSpaceOffset = currentOffset;
+
+            // 9. Replace old B-tree with new one
+            this.btree = newBTree;
+
+            // 10. Write updated header
+            this.writeHeader();
+
+            // 11. Truncate file to remove unused space at the end
+            this.truncateFile(currentOffset);
+
+            // 12. Clear node cache since offsets have changed
+            this.btree.clearCache();
+
+            console.log(`Compaction completed. File size reduced from ${this.fileSize} to ${currentOffset} bytes.`);
+
+        } catch (error) {
+            console.error('Error during file compaction:', error);
+            throw new Error(`File compaction failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+    private resetToMinimalSize(): void {
+        // Reset to empty file with just header and minimal B-tree area
+        const btreeAreaSize = 1024 * 1024; // 1MB minimal B-tree area
+        const documentAreaStart = HEADER_SIZE + btreeAreaSize;
+
+        this.header.rootNodeOffset = -1;
+        this.header.nextNodeOffset = HEADER_SIZE;
+        this.header.documentCount = 0;
+        this.header.freeSpaceOffset = documentAreaStart;
+        this.header.reserved1 = btreeAreaSize;
+
+        this.writeHeader();
+        this.truncateFile(documentAreaStart);
+
+        // Reset B-tree
+        this.btree = new BTree(
+            (offset) => this.readNodeFromFile(offset),
+            (offset, data) => this.writeNodeToFile(offset, data)
+        );
+    }
+
+    private calculateRequiredBTreeSpace(documentCount: number): number {
+        // Estimate B-tree space needed based on document count
+        // Each B-tree node can hold up to 15 entries
+        // We need roughly log_16(documentCount) levels
+        
+        if (documentCount === 0) {
+            return 1024 * 1024; // 1MB minimum
+        }
+
+        const entriesPerNode = 15;
+        const nodeSize = 1024;
+        
+        // Calculate number of leaf nodes needed
+        const leafNodes = Math.ceil(documentCount / entriesPerNode);
+        
+        // Calculate internal nodes (rough estimate for a balanced tree)
+        let internalNodes = 0;
+        let currentLevel = leafNodes;
+        
+        while (currentLevel > 1) {
+            currentLevel = Math.ceil(currentLevel / (entriesPerNode + 1));
+            internalNodes += currentLevel;
+        }
+        
+        const totalNodes = leafNodes + internalNodes;
+        const requiredSpace = totalNodes * nodeSize;
+        
+        // Add 50% buffer for growth and ensure minimum size
+        const bufferedSpace = Math.max(requiredSpace * 1.5, 1024 * 1024);
+        
+        return Math.ceil(bufferedSpace);
+    }
+
+    private truncateFile(newSize: number): void {
+        try {
+            ftruncateSync(this.fd, newSize);
+            this.fileSize = newSize;
+        } catch (error) {
+            console.warn('File truncation failed:', error);
+            // Truncation failure is not critical, file will just be larger than needed
+        }
     }
 }
