@@ -6,8 +6,8 @@ import { existsSync, writeFileSync } from "fs";
 export class WALJSONStorage extends WALStorage {
   private indent = 0;
 
-  constructor(path: string = "db.json", opts: { indent?: number } = {}) {
-    super(path);
+  constructor(path: string = "db.json", opts: { indent?: number; batchSize?: number; maxBatchWaitMs?: number } = {}) {
+    super(path, opts.batchSize ?? 10, opts.maxBatchWaitMs ?? 50);
     this.indent = opts.indent ?? 0;
     
     // Initialize main data file if it doesn't exist

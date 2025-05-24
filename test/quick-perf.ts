@@ -90,9 +90,17 @@ async function quickTest() {
   if (existsSync('test-wal.json.wal')) unlinkSync('test-wal.json.wal');
   const walDb = new TinyDB('test-wal.json', { storage: WALJSONStorage });
   
+  // Individual inserts (no batching benefit)
   start = performance.now();
   for (const doc of testData) walDb.insert(doc);
   insertTime = performance.now() - start;
+  
+  walDb.truncate();
+  
+  // Batch insert (benefits from batching)
+  start = performance.now();
+  walDb.insertMultiple(testData);
+  const walBatchInsertTime = performance.now() - start;
   
   start = performance.now();
   for (let i = 1; i <= 100; i++) walDb.search({ id: i });
@@ -102,7 +110,8 @@ async function quickTest() {
   for (let i = 1; i <= 100; i++) walDb.update({ age: 40 }, { id: i });
   updateTime = performance.now() - start;
   
-  log(`- Insert 1000 docs: ${insertTime.toFixed(1)}ms (${(1000/insertTime*1000).toFixed(0)} ops/sec)`);
+  log(`- Insert 1000 docs (individual): ${insertTime.toFixed(1)}ms (${(1000/insertTime*1000).toFixed(0)} ops/sec)`);
+  log(`- Insert 1000 docs (batch): ${walBatchInsertTime.toFixed(1)}ms (${(1000/walBatchInsertTime*1000).toFixed(0)} ops/sec)`);
   log(`- Read 100 docs: ${readTime.toFixed(1)}ms (${(100/readTime*1000).toFixed(0)} ops/sec)`);
   log(`- Update 100 docs: ${updateTime.toFixed(1)}ms (${(100/updateTime*1000).toFixed(0)} ops/sec)`);
   log('');
@@ -116,7 +125,7 @@ async function quickTest() {
   if (existsSync('test-tx.json')) unlinkSync('test-tx.json');
   if (existsSync('test-tx.json.wal')) unlinkSync('test-tx.json.wal');
   
-  const walStorage = new WALStorage('test-tx.json');
+  const walStorage = new WALStorage('test-tx.json', 10, 50); // Enable batching
   
   // Test transaction performance
   start = performance.now();

@@ -30,12 +30,18 @@ export class WALStorage implements Storage {
   private stableTxid: number = 0;
   private snapshots: Map<number, JsonObject> = new Map();
   private indexes: Map<string, import('./Storage').IndexDefinition> = new Map();
+  private pendingOperations: WALOperation[] = [];
+  private batchSize: number = 10;
+  private flushTimeout: NodeJS.Timeout | null = null;
+  private maxBatchWaitMs: number = 100;
 
-  constructor(path: string) {
+  constructor(path: string, batchSize: number = 10, maxBatchWaitMs: number = 100) {
     this.dataPath = path;
     this.walPath = `${path}.wal`;
     this.lockPath = `${path}.lock`;
     this.indexPath = `${path}.idx.json`;
+    this.batchSize = batchSize;
+    this.maxBatchWaitMs = maxBatchWaitMs;
     this.loadFromWAL();
     this.loadIndexes();
   }
@@ -143,11 +149,37 @@ export class WALStorage implements Storage {
   }
 
   private appendToWAL(operation: WALOperation): void {
+    this.pendingOperations.push(operation);
+    
+    // Flush immediately if batch is full
+    if (this.pendingOperations.length >= this.batchSize) {
+      this.flushBatch();
+    } else {
+      // Schedule a flush if one isn't already scheduled
+      if (this.flushTimeout === null) {
+        this.flushTimeout = setTimeout(() => {
+          this.flushBatch();
+        }, this.maxBatchWaitMs);
+      }
+    }
+  }
+
+  private flushBatch(): void {
+    if (this.flushTimeout !== null) {
+      clearTimeout(this.flushTimeout);
+      this.flushTimeout = null;
+    }
+
+    if (this.pendingOperations.length === 0) {
+      return;
+    }
+
     try {
-      const operationLine = JSON.stringify(operation) + '\n';
-      appendFileSync(this.walPath, operationLine, 'utf8');
+      const batch = this.pendingOperations.splice(0, this.pendingOperations.length);
+      const batchContent = batch.map(op => JSON.stringify(op)).join('\n') + '\n';
+      appendFileSync(this.walPath, batchContent, 'utf8');
     } catch (error) {
-      throw new Error(`Failed to write to WAL: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Failed to write batch to WAL: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -276,6 +308,8 @@ export class WALStorage implements Storage {
 
       // Write to WAL first, then update in-memory state atomically
       this.appendToWAL(commitOp);
+      // Force flush for commit operations to ensure durability
+      this.flushBatch();
       tx.committed = true;
       this.buildSnapshot(txid);
       this.updateStableTxid();
@@ -416,6 +450,9 @@ export class WALStorage implements Storage {
   }
 
   flush(): void {
+    // Flush any pending WAL operations first
+    this.flushBatch();
+    
     const stableSnapshot = this.getSnapshot(this.stableTxid);
     if (stableSnapshot) {
       writeFileSync(this.dataPath, JSON.stringify(stableSnapshot, null, 2), 'utf8');
@@ -477,6 +514,13 @@ export class WALStorage implements Storage {
         this.appendToWAL(abortOp);
       }
     }
+  }
+
+  /**
+   * Force immediate flush of pending WAL operations
+   */
+  forceBatchFlush(): void {
+    this.flushBatch();
   }
 
   close(): void {
