@@ -463,7 +463,7 @@ export class Table<T extends Record<string, any> = any> {
     return maxId + 1;
   }
 
-  private _readTable(): Record<string, Record<string, any>> {
+  protected _readTable(): Record<string, Record<string, any>> {
     const tables = this._storage.read();
     if (!tables || !tables[this._name]) {
       return {};

@@ -60,7 +60,9 @@ export {
     getPrimaryKey,
     getCompoundIndexGroups,
     validateSchemaData,
-    safeValidateSchemaData
+    safeValidateSchemaData,
+    validatePartialSchemaData,
+    safeValidatePartialSchemaData
 } from './schema/utils';
 
 // Default export for convenience

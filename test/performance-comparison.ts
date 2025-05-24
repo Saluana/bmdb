@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
-import { TinyDB } from './src/core/TinyDB';
-import { MemoryStorage } from './src/storage/MemoryStorage';
-import { JSONStorage } from './src/storage/JSONStorage';
-import { WALJSONStorage } from './src/storage/WALJSONStorage';
+import { TinyDB } from '../src/core/TinyDB';
+import { MemoryStorage } from '../src/storage/MemoryStorage';
+import { JSONStorage } from '../src/storage/JSONStorage';
+import { WALJSONStorage } from '../src/storage/WALJSONStorage';
 
 // Create a new MemoryStorage class with the old structuredClone behavior for comparison
 class OldMemoryStorage {

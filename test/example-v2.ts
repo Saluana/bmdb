@@ -7,7 +7,7 @@ import {
   compoundIndex,
   BmDbUniqueConstraintError,
   BmDbValidationError 
-} from './src/index';
+} from '../src/index';
 
 // ===== BmDB V2 Schema Example =====
 

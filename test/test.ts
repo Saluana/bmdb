@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { TinyDB, Query, where, MemoryStorage } from "./src/index";
+import { TinyDB, Query, where, MemoryStorage } from "../src/index";
 
 console.log("Testing TinyDB TypeScript implementation...");
 

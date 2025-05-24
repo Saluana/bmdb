@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 
-import { TinyDB } from './src/core/TinyDB';
-import { MemoryStorage } from './src/storage/MemoryStorage';
-import { JSONStorage } from './src/storage/JSONStorage';
-import { WALJSONStorage } from './src/storage/WALJSONStorage';
-import { WALStorage } from './src/storage/WALStorage';
+import { TinyDB } from '../src/core/TinyDB';
+import { MemoryStorage } from '../src/storage/MemoryStorage';
+import { JSONStorage } from '../src/storage/JSONStorage';
+import { WALJSONStorage } from '../src/storage/WALJSONStorage';
+import { WALStorage } from '../src/storage/WALStorage';
 import { existsSync, unlinkSync } from 'fs';
 
 // Simple performance test with immediate results

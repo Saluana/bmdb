@@ -1,4 +1,4 @@
-import { type ZodType, type ZodSchema, type infer as ZodInfer } from 'zod';
+import { type ZodType, type ZodSchema, type ZodObject, type infer as ZodInfer } from 'zod';
 import type { BmDbFieldMeta, BmDbSchemaMeta } from './types';
 import { getFieldMeta } from './helpers';
 import { createValidationError } from './errors';
@@ -39,6 +39,32 @@ export class BmDbSchema<T extends Record<string, any>> {
       return { success: true, data: result.data };
     } else {
       return { success: false, error: result.error };
+    }
+  }
+
+  validatePartial(data: unknown): Partial<T> {
+    try {
+      // Check if the schema is a ZodObject, which has the partial() method
+      const zodType = this.zodSchema as any;
+      if (zodType._def?.typeName === 'ZodObject') {
+        return (zodType as ZodObject<any>).partial().parse(data) as Partial<T>;
+      } else {
+        // For non-object schemas, just validate as-is
+        return this.zodSchema.parse(data) as Partial<T>;
+      }
+    } catch (zodError: any) {
+      const message = zodError.message || 'Partial schema validation failed';
+      const path = zodError.path || [];
+      throw createValidationError(message, path, zodError);
+    }
+  }
+
+  safeValidatePartial(data: unknown): { success: true; data: Partial<T> } | { success: false; error: any } {
+    try {
+      const validatedData = this.validatePartial(data);
+      return { success: true, data: validatedData };
+    } catch (error) {
+      return { success: false, error };
     }
   }
 
@@ -101,7 +127,7 @@ export class BmDbSchema<T extends Record<string, any>> {
     return Object.keys(this.zodShape) as Array<keyof T>;
   }
 
-  hasField(field: string): field is keyof T {
+  hasField(field: string): boolean {
     return field in this.zodShape;
   }
 

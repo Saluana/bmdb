@@ -11,7 +11,7 @@
  * - File format with separate B-tree and document areas
  */
 
-import { TinyDB, BinaryStorage, where } from "./src/index";
+import { TinyDB, BinaryStorage, where } from "../src/index";
 import { unlinkSync, existsSync, statSync } from "fs";
 
 console.log("🚀 Binary Storage Demo - TinyDB with Custom Binary Format");

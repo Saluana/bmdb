@@ -53,3 +53,17 @@ export function safeValidateSchemaData<T extends Record<string, any>>(
 ): { success: true; data: T } | { success: false; error: any } {
   return schema.safeValidate(data);
 }
+
+export function validatePartialSchemaData<T extends Record<string, any>>(
+  schema: BmDbSchema<T>,
+  data: unknown
+): Partial<T> {
+  return schema.validatePartial(data);
+}
+
+export function safeValidatePartialSchemaData<T extends Record<string, any>>(
+  schema: BmDbSchema<T>,
+  data: unknown
+): { success: true; data: Partial<T> } | { success: false; error: any } {
+  return schema.safeValidatePartial(data);
+}
