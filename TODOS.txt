@@ -7,12 +7,6 @@ Critical Bugs
   Performance Enhancement Opportunities
 
 
-  9. LRU Cache Implementation (src/utils/LRUCache.ts:15-25)
-
-  - Deletes and re-inserts on every access (O(n) worst case)
-  - Could use doubly-linked list for O(1) operations
-  - Improvement: Better cache performance
-
   10. Query Cache Key Generation (src/core/Table.ts:508-523)
 
   - Uses toString() and string slicing for function hashing

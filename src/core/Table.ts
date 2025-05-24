@@ -551,12 +551,47 @@ export class Table<T extends Record<string, any> = any> {
       return cond.__hash();
     }
     
-    // For simple functions, try to create a basic hash
+    // For functions, create a stable hash based on function content
+    if (typeof cond === 'function') {
+      return this._hashFunction(cond);
+    }
+    
+    // For other types, try to serialize and hash
     try {
-      return `fn_${cond.toString().slice(0, 100)}`;
+      const serialized = JSON.stringify(cond);
+      return this._hashString(serialized);
     } catch {
       return null;
     }
+  }
+
+  private _hashFunction(fn: Function): string {
+    try {
+      const fnStr = fn.toString();
+      // Remove whitespace and normalize for better cache hits
+      const normalized = fnStr
+        .replace(/\s+/g, ' ')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '')
+        .trim();
+      
+      return `fn_${this._hashString(normalized)}`;
+    } catch {
+      return `fn_${Math.random().toString(36).substr(2, 9)}`;
+    }
+  }
+
+  private _hashString(str: string): string {
+    let hash = 0;
+    if (str.length === 0) return hash.toString(36);
+    
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    
+    return Math.abs(hash).toString(36);
   }
 
   private _cloneDocument(doc: Document): Document {
