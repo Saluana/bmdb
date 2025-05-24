@@ -2,6 +2,7 @@ import type { Storage, IndexDefinition, VectorIndexDefinition } from "./Storage"
 import { deepFreeze } from "../utils/freeze";
 import type { JsonObject } from "../utils/types";
 import { VectorUtils, type Vector, type VectorSearchResult, type VectorIndex } from "../utils/VectorUtils";
+import { MessagePackUtil } from "../utils/MessagePackUtil";
 import { existsSync, readFileSync, writeFileSync, openSync, closeSync, unlinkSync, statSync } from "fs";
 import { promisify } from "util";
 
@@ -14,34 +15,69 @@ export class JSONStorage implements Storage {
   private writeLocked = false;
   private vectorIndexes: Map<string, VectorIndexDefinition> = new Map();
   private vectorData: Map<string, VectorIndex> = new Map(); // indexName -> vector index
+  private useMsgPack: boolean = false;
   
-  constructor(path: string = "db.json", opts: { indent?: number } = {}) {
+  constructor(path: string = "db.json", opts: { indent?: number; useMsgPack?: boolean } = {}) {
     this.path = path;
     this.indexPath = path.replace(/\.json$/, '.idx.json');
     this.indent = opts.indent ?? 0;
+    this.useMsgPack = opts.useMsgPack ?? false;
+    
+    if (this.useMsgPack) {
+      this.path = this.path.replace(/\.json$/, '.msgpack');
+      this.indexPath = this.indexPath.replace(/\.json$/, '.msgpack');
+    }
+    
     if (!existsSync(this.path)) {
-      writeFileSync(this.path, "{}\n");
+      if (this.useMsgPack) {
+        const emptyData = MessagePackUtil.encode({});
+        writeFileSync(this.path, emptyData);
+      } else {
+        writeFileSync(this.path, "{}\n");
+      }
     }
     if (!existsSync(this.indexPath)) {
-      writeFileSync(this.indexPath, "{}");
+      if (this.useMsgPack) {
+        const emptyData = MessagePackUtil.encode({});
+        writeFileSync(this.indexPath, emptyData);
+      } else {
+        writeFileSync(this.indexPath, "{}");
+      }
     }
   }
 
   read(): JsonObject | null {
-    const raw = readFileSync(this.path, 'utf-8');
-    if (!raw || raw.trim() === "") {
-      return null;
-    }
-    try {
-      return JSON.parse(raw) as JsonObject;
-    } catch {
-      return null;
+    if (this.useMsgPack) {
+      try {
+        const data = readFileSync(this.path);
+        if (!data || data.length === 0) {
+          return null;
+        }
+        return MessagePackUtil.decode(new Uint8Array(data)) as JsonObject;
+      } catch {
+        return null;
+      }
+    } else {
+      const raw = readFileSync(this.path, 'utf-8');
+      if (!raw || raw.trim() === "") {
+        return null;
+      }
+      try {
+        return JSON.parse(raw) as JsonObject;
+      } catch {
+        return null;
+      }
     }
   }
 
   write(obj: JsonObject): void {
     const frozen = deepFreeze(obj);
-    writeFileSync(this.path, JSON.stringify(frozen, null, this.indent));
+    if (this.useMsgPack) {
+      const data = MessagePackUtil.encode(frozen);
+      writeFileSync(this.path, data);
+    } else {
+      writeFileSync(this.path, JSON.stringify(frozen, null, this.indent));
+    }
     // Rebuild vector indexes after write
     this.rebuildVectorIndexes();
   }
@@ -354,15 +390,28 @@ export class JSONStorage implements Storage {
 
   private readIndexes(): Record<string, IndexDefinition> {
     try {
-      const raw = readFileSync(this.indexPath, 'utf-8');
-      return JSON.parse(raw) || {};
+      if (this.useMsgPack) {
+        const data = readFileSync(this.indexPath);
+        if (!data || data.length === 0) {
+          return {};
+        }
+        return MessagePackUtil.decode(new Uint8Array(data)) || {};
+      } else {
+        const raw = readFileSync(this.indexPath, 'utf-8');
+        return JSON.parse(raw) || {};
+      }
     } catch {
       return {};
     }
   }
 
   private writeIndexes(indexes: Record<string, IndexDefinition>): void {
-    writeFileSync(this.indexPath, JSON.stringify(indexes, null, this.indent));
+    if (this.useMsgPack) {
+      const data = MessagePackUtil.encode(indexes);
+      writeFileSync(this.indexPath, data);
+    } else {
+      writeFileSync(this.indexPath, JSON.stringify(indexes, null, this.indent));
+    }
   }
 
   private buildVectorIndex(indexDef: VectorIndexDefinition): void {

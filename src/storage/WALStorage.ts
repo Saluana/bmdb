@@ -1,6 +1,7 @@
 import type { Storage, VectorIndexDefinition } from "./Storage";
 import type { JsonObject } from "../utils/types";
 import type { Vector, VectorSearchResult } from "../utils/VectorUtils";
+import { MessagePackUtil } from "../utils/MessagePackUtil";
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from "fs";
 import { appendFileSync, openSync, closeSync, ftruncateSync } from "fs";
 
@@ -34,16 +35,43 @@ export class WALStorage implements Storage {
   private batchSize: number = 10;
   private flushTimeout: NodeJS.Timeout | null = null;
   private maxBatchWaitMs: number = 100;
+  private useMsgPack: boolean = false;
+  private compactThreshold: number = 1000; // WAL operations before auto-compact
+  private autoFlushInterval: NodeJS.Timeout | null = null;
 
-  constructor(path: string, batchSize: number = 10, maxBatchWaitMs: number = 100) {
+  constructor(path: string, options: {
+    batchSize?: number;
+    maxBatchWaitMs?: number;
+    useMsgPack?: boolean;
+    compactThreshold?: number;
+    autoFlushMs?: number;
+  } = {}) {
     this.dataPath = path;
     this.walPath = `${path}.wal`;
     this.lockPath = `${path}.lock`;
     this.indexPath = `${path}.idx.json`;
-    this.batchSize = batchSize;
-    this.maxBatchWaitMs = maxBatchWaitMs;
+    
+    this.batchSize = options.batchSize ?? 10;
+    this.maxBatchWaitMs = options.maxBatchWaitMs ?? 100;
+    this.useMsgPack = options.useMsgPack ?? false;
+    this.compactThreshold = options.compactThreshold ?? 1000;
+    
+    if (this.useMsgPack) {
+      this.dataPath = this.dataPath.replace(/\.json$/, '.msgpack');
+      this.indexPath = this.indexPath.replace(/\.json$/, '.msgpack');
+    }
+    
     this.loadFromWAL();
     this.loadIndexes();
+    
+    // Auto-flush setup
+    if (options.autoFlushMs && options.autoFlushMs > 0) {
+      this.autoFlushInterval = setInterval(() => {
+        if (this.pendingOperations.length > 0) {
+          this.flushBatch();
+        }
+      }, options.autoFlushMs);
+    }
   }
 
   private loadFromWAL(): void {
@@ -51,8 +79,13 @@ export class WALStorage implements Storage {
     let baseSnapshot: JsonObject = {};
     if (existsSync(this.dataPath)) {
       try {
-        const content = readFileSync(this.dataPath, 'utf8');
-        baseSnapshot = content.trim() ? JSON.parse(content) : {};
+        if (this.useMsgPack) {
+          const data = readFileSync(this.dataPath);
+          baseSnapshot = data.length > 0 ? MessagePackUtil.decode(new Uint8Array(data)) : {};
+        } else {
+          const content = readFileSync(this.dataPath, 'utf8');
+          baseSnapshot = content.trim() ? JSON.parse(content) : {};
+        }
       } catch {
         baseSnapshot = {};
       }
@@ -178,6 +211,19 @@ export class WALStorage implements Storage {
       const batch = this.pendingOperations.splice(0, this.pendingOperations.length);
       const batchContent = batch.map(op => JSON.stringify(op)).join('\n') + '\n';
       appendFileSync(this.walPath, batchContent, 'utf8');
+      
+      // Check if we need to auto-compact
+      const currentWALSize = this.getWALSize();
+      if (currentWALSize >= this.compactThreshold) {
+        // Schedule compaction for next tick to avoid blocking
+        setImmediate(() => {
+          try {
+            this.compact();
+          } catch (error) {
+            console.warn('Auto-compaction failed:', error);
+          }
+        });
+      }
     } catch (error) {
       throw new Error(`Failed to write batch to WAL: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -455,7 +501,12 @@ export class WALStorage implements Storage {
     
     const stableSnapshot = this.getSnapshot(this.stableTxid);
     if (stableSnapshot) {
-      writeFileSync(this.dataPath, JSON.stringify(stableSnapshot, null, 2), 'utf8');
+      if (this.useMsgPack) {
+        const data = MessagePackUtil.encode(stableSnapshot);
+        writeFileSync(this.dataPath, data);
+      } else {
+        writeFileSync(this.dataPath, JSON.stringify(stableSnapshot, null, 2), 'utf8');
+      }
     }
   }
 
@@ -524,6 +575,18 @@ export class WALStorage implements Storage {
   }
 
   close(): void {
+    // Clear auto-flush interval
+    if (this.autoFlushInterval !== null) {
+      clearInterval(this.autoFlushInterval);
+      this.autoFlushInterval = null;
+    }
+    
+    // Clear any pending flush timeout
+    if (this.flushTimeout !== null) {
+      clearTimeout(this.flushTimeout);
+      this.flushTimeout = null;
+    }
+    
     this.releaseLock();
     this.flush();
     this.compact();
@@ -762,8 +825,14 @@ export class WALStorage implements Storage {
   private loadIndexes(): void {
     try {
       if (existsSync(this.indexPath)) {
-        const raw = readFileSync(this.indexPath, 'utf-8');
-        const indexData = JSON.parse(raw) || {};
+        let indexData: any;
+        if (this.useMsgPack) {
+          const data = readFileSync(this.indexPath);
+          indexData = data.length > 0 ? MessagePackUtil.decode(new Uint8Array(data)) : {};
+        } else {
+          const raw = readFileSync(this.indexPath, 'utf-8');
+          indexData = JSON.parse(raw) || {};
+        }
         
         for (const [name, def] of Object.entries(indexData)) {
           this.indexes.set(name, def as import('./Storage').IndexDefinition);
@@ -781,7 +850,13 @@ export class WALStorage implements Storage {
       for (const [name, def] of this.indexes.entries()) {
         indexData[name] = def;
       }
-      writeFileSync(this.indexPath, JSON.stringify(indexData, null, 2));
+      
+      if (this.useMsgPack) {
+        const data = MessagePackUtil.encode(indexData);
+        writeFileSync(this.indexPath, data);
+      } else {
+        writeFileSync(this.indexPath, JSON.stringify(indexData, null, 2));
+      }
     } catch (error) {
       console.warn('Failed to save indexes:', error);
     }

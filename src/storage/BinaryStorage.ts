@@ -34,6 +34,7 @@ import {
 const MAGIC_NUMBER = 0x424d4442; // "BMDB"
 const FORMAT_VERSION = 1;
 const HEADER_SIZE = 32;
+const MMAP_CHUNK_SIZE = 64 * 1024; // 64KB chunks for memory mapping
 
 interface FileHeader {
     magic: number;
@@ -46,6 +47,14 @@ interface FileHeader {
     reserved2: number;
 }
 
+interface MemoryMappedChunk {
+    buffer: Buffer;
+    offset: number;
+    size: number;
+    dirty: boolean;
+    lastAccessed: number;
+}
+
 export class BinaryStorage implements Storage {
     private fd: number = -1;
     private path: string;
@@ -53,11 +62,20 @@ export class BinaryStorage implements Storage {
     private header!: FileHeader;
     private fileSize: number = 0;
     private cleanupRegistered: boolean = false;
+    private mmapChunks: Map<number, MemoryMappedChunk> = new Map();
+    private maxCacheSize: number = 16; // Maximum number of cached chunks
+    private mmapEnabled: boolean = true;
 
-    constructor(path: string = 'db.bmdb') {
+    constructor(path: string = 'db.bmdb', options: { 
+        maxCacheSize?: number; 
+        mmapEnabled?: boolean;
+        chunkSize?: number;
+    } = {}) {
         this.path = path;
+        this.maxCacheSize = options.maxCacheSize ?? 16;
+        this.mmapEnabled = options.mmapEnabled ?? true;
 
-        // Initialize B-tree with file I/O callbacks
+        // Initialize B-tree with memory-mapped file I/O callbacks
         this.btree = new BTree(
             (offset) => this.readNodeFromFile(offset),
             (offset, data) => this.writeNodeToFile(offset, data)
@@ -153,6 +171,12 @@ export class BinaryStorage implements Storage {
     }
 
     close(): void {
+        // Flush all dirty memory-mapped chunks first
+        this.flushAllChunks();
+        
+        // Clear memory-mapped chunks cache
+        this.mmapChunks.clear();
+        
         if (this.fd !== -1) {
             const fdToClose = this.fd;
             this.fd = -1; // Mark as closed immediately to prevent double-close
@@ -344,44 +368,57 @@ export class BinaryStorage implements Storage {
     }
 
     private readNodeFromFile(offset: number): Uint8Array {
-        const buffer = Buffer.alloc(1024); // BTreeNode.NODE_SIZE
-        try {
-            const bytesRead = readSync(this.fd, buffer, 0, 1024, offset);
-            if (bytesRead !== 1024) {
-                throw new Error(`Expected to read 1024 bytes, but got ${bytesRead}`);
+        if (this.mmapEnabled) {
+            return this.readFromMappedChunk(offset, 1024);
+        } else {
+            const buffer = Buffer.alloc(1024); // BTreeNode.NODE_SIZE
+            try {
+                const bytesRead = readSync(this.fd, buffer, 0, 1024, offset);
+                if (bytesRead !== 1024) {
+                    throw new Error(`Expected to read 1024 bytes, but got ${bytesRead}`);
+                }
+            } catch (error) {
+                throw new Error(`Failed to read node from file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
             }
-        } catch (error) {
-            throw new Error(`Failed to read node from file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+            return new Uint8Array(buffer);
         }
-        return new Uint8Array(buffer);
     }
 
     private writeNodeToFile(offset: number, data: Uint8Array): void {
-        try {
-            // Ensure file is large enough
-            const requiredSize = offset + data.length;
-            if (requiredSize > this.fileSize) {
-                // Extend file size
-                const padding = Buffer.alloc(requiredSize - this.fileSize);
-                const paddingWritten = writeSync(this.fd, padding, 0, padding.length, this.fileSize);
-                if (paddingWritten !== padding.length) {
-                    throw new Error(`Failed to extend file: expected to write ${padding.length} bytes, but wrote ${paddingWritten}`);
-                }
-                this.fileSize = requiredSize;
-            }
-
-            const buffer = Buffer.from(data);
-            const bytesWritten = writeSync(this.fd, buffer, 0, data.length, offset);
-            if (bytesWritten !== data.length) {
-                throw new Error(`Expected to write ${data.length} bytes, but wrote ${bytesWritten}`);
-            }
-
+        if (this.mmapEnabled) {
+            this.writeToMappedChunk(offset, data);
+            
             // Update next node offset if this is a new node
             if (offset >= this.header.nextNodeOffset) {
                 this.header.nextNodeOffset = offset + 1024;
             }
-        } catch (error) {
-            throw new Error(`Failed to write node to file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+        } else {
+            try {
+                // Ensure file is large enough
+                const requiredSize = offset + data.length;
+                if (requiredSize > this.fileSize) {
+                    // Extend file size
+                    const padding = Buffer.alloc(requiredSize - this.fileSize);
+                    const paddingWritten = writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+                    if (paddingWritten !== padding.length) {
+                        throw new Error(`Failed to extend file: expected to write ${padding.length} bytes, but wrote ${paddingWritten}`);
+                    }
+                    this.fileSize = requiredSize;
+                }
+
+                const buffer = Buffer.from(data);
+                const bytesWritten = writeSync(this.fd, buffer, 0, data.length, offset);
+                if (bytesWritten !== data.length) {
+                    throw new Error(`Expected to write ${data.length} bytes, but wrote ${bytesWritten}`);
+                }
+
+                // Update next node offset if this is a new node
+                if (offset >= this.header.nextNodeOffset) {
+                    this.header.nextNodeOffset = offset + 1024;
+                }
+            } catch (error) {
+                throw new Error(`Failed to write node to file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+            }
         }
     }
 
@@ -795,5 +832,205 @@ export class BinaryStorage implements Storage {
     supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking' | 'vectorSearch'): boolean {
         if (feature === 'vectorSearch') return false;
         return ['async'].includes(feature);
+    }
+
+    // Memory-mapped chunk management methods
+
+    private getChunkKey(offset: number): number {
+        return Math.floor(offset / MMAP_CHUNK_SIZE);
+    }
+
+    private getChunkOffset(offset: number): number {
+        return offset % MMAP_CHUNK_SIZE;
+    }
+
+    private getMappedChunk(chunkKey: number): MemoryMappedChunk {
+        let chunk = this.mmapChunks.get(chunkKey);
+        
+        if (!chunk) {
+            // Evict LRU chunk if cache is full
+            if (this.mmapChunks.size >= this.maxCacheSize) {
+                this.evictLRUChunk();
+            }
+            
+            // Create new chunk
+            chunk = this.loadChunk(chunkKey);
+            this.mmapChunks.set(chunkKey, chunk);
+        }
+        
+        chunk.lastAccessed = Date.now();
+        return chunk;
+    }
+
+    private loadChunk(chunkKey: number): MemoryMappedChunk {
+        const offset = chunkKey * MMAP_CHUNK_SIZE;
+        const maxSize = Math.min(MMAP_CHUNK_SIZE, this.fileSize - offset);
+        const size = Math.max(0, maxSize);
+        
+        const buffer = Buffer.alloc(MMAP_CHUNK_SIZE);
+        
+        if (size > 0 && this.fd !== -1) {
+            try {
+                const bytesRead = readSync(this.fd, buffer, 0, size, offset);
+                if (bytesRead !== size) {
+                    console.warn(`Expected to read ${size} bytes, but got ${bytesRead} for chunk ${chunkKey}`);
+                }
+            } catch (error) {
+                console.warn(`Failed to load chunk ${chunkKey}:`, error);
+            }
+        }
+        
+        return {
+            buffer,
+            offset,
+            size: MMAP_CHUNK_SIZE,
+            dirty: false,
+            lastAccessed: Date.now()
+        };
+    }
+
+    private evictLRUChunk(): void {
+        let oldestTime = Date.now();
+        let oldestKey = -1;
+        
+        for (const [key, chunk] of this.mmapChunks) {
+            if (chunk.lastAccessed < oldestTime) {
+                oldestTime = chunk.lastAccessed;
+                oldestKey = key;
+            }
+        }
+        
+        if (oldestKey !== -1) {
+            const chunk = this.mmapChunks.get(oldestKey);
+            if (chunk && chunk.dirty) {
+                this.flushChunk(oldestKey, chunk);
+            }
+            this.mmapChunks.delete(oldestKey);
+        }
+    }
+
+    private flushChunk(chunkKey: number, chunk: MemoryMappedChunk): void {
+        if (!chunk.dirty || this.fd === -1) return;
+        
+        try {
+            const actualSize = Math.min(chunk.size, this.fileSize - chunk.offset);
+            if (actualSize > 0) {
+                const bytesWritten = writeSync(this.fd, chunk.buffer, 0, actualSize, chunk.offset);
+                if (bytesWritten !== actualSize) {
+                    console.warn(`Expected to write ${actualSize} bytes, but wrote ${bytesWritten} for chunk ${chunkKey}`);
+                }
+            }
+            chunk.dirty = false;
+        } catch (error) {
+            console.error(`Failed to flush chunk ${chunkKey}:`, error);
+        }
+    }
+
+    private flushAllChunks(): void {
+        for (const [key, chunk] of this.mmapChunks) {
+            if (chunk.dirty) {
+                this.flushChunk(key, chunk);
+            }
+        }
+    }
+
+    private readFromMappedChunk(offset: number, length: number): Uint8Array {
+        // Handle cross-chunk reads
+        if (length <= MMAP_CHUNK_SIZE) {
+            const chunkKey = this.getChunkKey(offset);
+            const chunkOffset = this.getChunkOffset(offset);
+            
+            // Check if read spans multiple chunks
+            if (chunkOffset + length <= MMAP_CHUNK_SIZE) {
+                // Single chunk read
+                const chunk = this.getMappedChunk(chunkKey);
+                return new Uint8Array(chunk.buffer.subarray(chunkOffset, chunkOffset + length));
+            }
+        }
+        
+        // Multi-chunk read or large read - fallback to direct file access
+        const buffer = Buffer.alloc(length);
+        try {
+            const bytesRead = readSync(this.fd, buffer, 0, length, offset);
+            if (bytesRead !== length) {
+                throw new Error(`Expected to read ${length} bytes, but got ${bytesRead}`);
+            }
+        } catch (error) {
+            throw new Error(`Failed to read from file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return new Uint8Array(buffer);
+    }
+
+    private writeToMappedChunk(offset: number, data: Uint8Array): void {
+        // Ensure file is large enough first
+        const requiredSize = offset + data.length;
+        if (requiredSize > this.fileSize) {
+            this.extendFile(requiredSize);
+        }
+        
+        // Handle cross-chunk writes
+        if (data.length <= MMAP_CHUNK_SIZE) {
+            const chunkKey = this.getChunkKey(offset);
+            const chunkOffset = this.getChunkOffset(offset);
+            
+            // Check if write spans multiple chunks
+            if (chunkOffset + data.length <= MMAP_CHUNK_SIZE) {
+                // Single chunk write
+                const chunk = this.getMappedChunk(chunkKey);
+                chunk.buffer.set(data, chunkOffset);
+                chunk.dirty = true;
+                return;
+            }
+        }
+        
+        // Multi-chunk write or large write - fallback to direct file access
+        try {
+            const buffer = Buffer.from(data);
+            const bytesWritten = writeSync(this.fd, buffer, 0, data.length, offset);
+            if (bytesWritten !== data.length) {
+                throw new Error(`Expected to write ${data.length} bytes, but wrote ${bytesWritten}`);
+            }
+            
+            // Invalidate affected chunks
+            const startChunk = this.getChunkKey(offset);
+            const endChunk = this.getChunkKey(offset + data.length - 1);
+            for (let chunkKey = startChunk; chunkKey <= endChunk; chunkKey++) {
+                this.mmapChunks.delete(chunkKey);
+            }
+        } catch (error) {
+            throw new Error(`Failed to write to file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+    private extendFile(newSize: number): void {
+        try {
+            const padding = Buffer.alloc(newSize - this.fileSize);
+            const bytesWritten = writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+            if (bytesWritten !== padding.length) {
+                throw new Error(`Failed to extend file: expected to write ${padding.length} bytes, but wrote ${bytesWritten}`);
+            }
+            this.fileSize = newSize;
+        } catch (error) {
+            throw new Error(`Failed to extend file: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+    // Performance monitoring
+    getCacheStats(): {
+        totalChunks: number;
+        dirtyChunks: number;
+        cacheHitRatio: number;
+        memoryUsage: number;
+    } {
+        const totalChunks = this.mmapChunks.size;
+        const dirtyChunks = Array.from(this.mmapChunks.values()).filter(chunk => chunk.dirty).length;
+        const memoryUsage = totalChunks * MMAP_CHUNK_SIZE;
+        
+        return {
+            totalChunks,
+            dirtyChunks,
+            cacheHitRatio: 0, // Would need hit/miss tracking to implement
+            memoryUsage
+        };
     }
 }

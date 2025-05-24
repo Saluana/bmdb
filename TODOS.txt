@@ -73,18 +73,6 @@ Critical Bugs
 
   Performance Optimization Plan (10x minimum improvement target):
 
-  Phase 1: Critical Path Optimizations
-  - Remove structuredClone() from hot paths (JSON storage)
-  - Implement selective updates instead of full DB rewrites
-  - Add operation batching with single I/O cycle
-  - Optimize B-tree node operations with bulk loading
-
-  Phase 2: Caching & Memory Management
-  - Add LRU query result cache
-  - Implement copy-on-write semantics for data isolation
-  - Add connection pooling for concurrent operations
-  - Use object pooling to reduce allocation overhead
-
   Phase 3: I/O & Serialization
   - Replace JSON with MessagePack for faster serialization
   - Add memory-mapped file access for binary storage
