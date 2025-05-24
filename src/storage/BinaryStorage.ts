@@ -52,6 +52,7 @@ export class BinaryStorage implements Storage {
     private btree: BTree;
     private header!: FileHeader;
     private fileSize: number = 0;
+    private cleanupRegistered: boolean = false;
 
     constructor(path: string = 'db.bmdb') {
         this.path = path;
@@ -63,6 +64,26 @@ export class BinaryStorage implements Storage {
         );
 
         this.initializeFile();
+        this.registerCleanupHandlers();
+    }
+
+    private registerCleanupHandlers(): void {
+        if (this.cleanupRegistered) return;
+        this.cleanupRegistered = true;
+
+        const cleanup = () => {
+            try {
+                this.close();
+            } catch (error) {
+                // Silently handle cleanup errors during shutdown
+            }
+        };
+
+        process.on('exit', cleanup);
+        process.on('SIGINT', cleanup);
+        process.on('SIGTERM', cleanup);
+        process.on('uncaughtException', cleanup);
+        process.on('unhandledRejection', cleanup);
     }
 
     read(): JsonObject | null {
@@ -133,12 +154,15 @@ export class BinaryStorage implements Storage {
 
     close(): void {
         if (this.fd !== -1) {
+            const fdToClose = this.fd;
+            this.fd = -1; // Mark as closed immediately to prevent double-close
+            
             try {
-                closeSync(this.fd);
+                closeSync(fdToClose);
             } catch (error) {
-                console.error('Error closing file:', error);
+                console.error(`Error closing file ${this.path} (fd: ${fdToClose}):`, error);
+                // Don't re-throw during cleanup as it could prevent other cleanup
             }
-            this.fd = -1;
         }
     }
 
