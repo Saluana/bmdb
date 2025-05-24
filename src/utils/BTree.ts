@@ -300,6 +300,109 @@ export class BTree {
     }
   }
 
+  // Bulk insert for better performance
+  bulkInsert(entries: BTreeEntry[]): void {
+    if (entries.length === 0) return;
+
+    // Sort entries by key for optimal B-tree construction
+    const sortedEntries = [...entries].sort((a, b) => a.key.localeCompare(b.key));
+    
+    if (this.rootOffset === -1) {
+      // Build tree from scratch using bulk loading algorithm
+      this.bulkLoad(sortedEntries);
+    } else {
+      // Insert entries in batches to minimize tree rebalancing
+      const batchSize = Math.max(1, Math.floor(BTreeNode.MAX_KEYS * 0.8));
+      for (let i = 0; i < sortedEntries.length; i += batchSize) {
+        const batch = sortedEntries.slice(i, i + batchSize);
+        for (const entry of batch) {
+          this.insert(entry);
+        }
+      }
+    }
+  }
+
+  // Bulk load algorithm for creating optimal B-tree from sorted data
+  private bulkLoad(sortedEntries: BTreeEntry[]): void {
+    if (sortedEntries.length === 0) return;
+
+    // Build leaf nodes first
+    const leafNodes: BTreeNode[] = [];
+    let currentLeaf = new BTreeNode(true);
+    leafNodes.push(currentLeaf);
+
+    for (let i = 0; i < sortedEntries.length; i++) {
+      if (currentLeaf.keys.length >= BTreeNode.MAX_KEYS) {
+        // Current leaf is full, create new one
+        const newLeaf = new BTreeNode(true);
+        currentLeaf.nextLeafOffset = -1; // Will be set when newLeaf gets an offset
+        leafNodes.push(newLeaf);
+        currentLeaf = newLeaf;
+      }
+      currentLeaf.insertEntry(sortedEntries[i]);
+    }
+
+    // Assign offsets and save leaf nodes
+    for (let i = 0; i < leafNodes.length; i++) {
+      leafNodes[i].offset = this.allocateNodeOffset();
+      if (i < leafNodes.length - 1) {
+        leafNodes[i].nextLeafOffset = leafNodes[i + 1].offset;
+      }
+      this.saveNode(leafNodes[i]);
+    }
+
+    // Build internal nodes bottom-up
+    let currentLevel: BTreeNode[] = leafNodes;
+    
+    while (currentLevel.length > 1) {
+      const nextLevel: BTreeNode[] = [];
+      let currentInternal = new BTreeNode(false);
+      nextLevel.push(currentInternal);
+
+      for (let i = 0; i < currentLevel.length; i++) {
+        const child = currentLevel[i];
+        
+        if (currentInternal.children.length >= BTreeNode.MAX_KEYS + 1) {
+          // Current internal node is full, create new one
+          const newInternal = new BTreeNode(false);
+          nextLevel.push(newInternal);
+          currentInternal = newInternal;
+        }
+
+        // Add child to current internal node
+        if (currentInternal.children.length > 0) {
+          // Add separator key (first key of child)
+          currentInternal.keys.push(child.keys[0]);
+        }
+        currentInternal.children.push(child.offset);
+        child.parentOffset = -1; // Will be set when currentInternal gets an offset
+      }
+
+      // Assign offsets and save internal nodes
+      for (const internal of nextLevel) {
+        internal.offset = this.allocateNodeOffset();
+        
+        // Update children's parent pointers
+        for (const childOffset of internal.children) {
+          const child = this.loadNode(childOffset);
+          child.parentOffset = internal.offset;
+          this.saveNode(child);
+        }
+        
+        this.saveNode(internal);
+      }
+
+      currentLevel = nextLevel;
+    }
+
+    // Set root
+    if (currentLevel.length > 0) {
+      this.rootOffset = currentLevel[0].offset;
+      currentLevel[0].parentOffset = -1;
+      this.saveNode(currentLevel[0]);
+    }
+  }
+
   // Remove entry
   remove(key: string): boolean {
     if (this.rootOffset === -1) return false;
@@ -666,6 +769,23 @@ export class BTree {
     const offset = this.nextNodeOffset;
     this.nextNodeOffset += BTreeNode.NODE_SIZE;
     return offset;
+  }
+
+  // Bulk remove for better performance
+  bulkRemove(keys: string[]): number {
+    if (keys.length === 0) return 0;
+
+    let removedCount = 0;
+    const sortedKeys = [...keys].sort();
+    
+    // Remove in batches to minimize rebalancing
+    for (const key of sortedKeys) {
+      if (this.remove(key)) {
+        removedCount++;
+      }
+    }
+
+    return removedCount;
   }
 
   // Get cache statistics for monitoring

@@ -40,7 +40,7 @@ export class JSONStorage implements Storage {
   }
 
   write(obj: JsonObject): void {
-    const frozen = deepFreeze(structuredClone(obj));
+    const frozen = deepFreeze(obj);
     writeFileSync(this.path, JSON.stringify(frozen, null, this.indent));
     // Rebuild vector indexes after write
     this.rebuildVectorIndexes();
@@ -396,5 +396,18 @@ export class JSONStorage implements Storage {
     for (const indexDef of this.vectorIndexes.values()) {
       this.buildVectorIndex(indexDef);
     }
+  }
+
+  // Optimized update method that only writes changed data
+  update(obj: JsonObject): void {
+    const current = this.read();
+    if (!current) {
+      this.write(obj);
+      return;
+    }
+
+    // Perform shallow merge to avoid unnecessary deep cloning
+    const updated = { ...current, ...obj };
+    this.write(updated);
   }
 }

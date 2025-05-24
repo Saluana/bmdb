@@ -1,17 +1,9 @@
 Critical Bugs
 
-
   Potential Bugs
 
 
   Performance Enhancement Opportunities
-
-
-  10. Query Cache Key Generation (src/core/Table.ts:508-523)
-
-  - Uses toString() and string slicing for function hashing
-  - Inefficient and unreliable for cache keys
-  - Improvement: Better cache hit rates
 
   Code Quality Issues
 
@@ -63,3 +55,47 @@ Critical Bugs
   - Optimize B-tree serialization (#7)
   - Improve LRU cache implementation (#9)
   - Document magic numbers (#12)
+
+  ---
+
+  Based on the performance analysis, I can see the main bottlenecks. Current performance
+  shows:
+
+  Memory: 6-720K ops/sec (huge variance)
+  JSON: 140-268 ops/secWAL: 39-148 ops/sec
+
+  The main issues are:
+  1. structuredClone() overhead in JSON storage
+  2. Full DB read/write cycles for single operations
+  3. No connection pooling or caching
+  4. Inefficient B-tree operations
+  5. No batch optimization usage
+
+  Performance Optimization Plan (10x minimum improvement target):
+
+  Phase 1: Critical Path Optimizations
+  - Remove structuredClone() from hot paths (JSON storage)
+  - Implement selective updates instead of full DB rewrites
+  - Add operation batching with single I/O cycle
+  - Optimize B-tree node operations with bulk loading
+
+  Phase 2: Caching & Memory Management
+  - Add LRU query result cache
+  - Implement copy-on-write semantics for data isolation
+  - Add connection pooling for concurrent operations
+  - Use object pooling to reduce allocation overhead
+
+  Phase 3: I/O & Serialization
+  - Replace JSON with MessagePack for faster serialization
+  - Add memory-mapped file access for binary storage
+  - Implement streaming operations for large datasets
+  - Add write batching for WAL storage
+
+  Phase 4: Advanced Optimizations
+  - Implement lazy loading with pagination
+  - Add background WAL compaction
+  - Optimize vector search with better indexing
+  - Add parallel query execution
+
+  This should achieve 10x+ improvement across all storage modes by targeting the specific
+  bottlenecks identified in each storage implementation.

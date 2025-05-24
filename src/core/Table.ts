@@ -530,6 +530,35 @@ export class Table<T extends Record<string, any> = any> {
   }
 
   private _updateTable(updater: (table: Record<string, Record<string, any>>) => void): void {
+    // Check if storage supports selective updates
+    if (this._storage.supportsFeature && this._storage.supportsFeature('batch')) {
+      this._performSelectiveUpdate(updater);
+    } else {
+      this._performFullUpdate(updater);
+    }
+    
+    // Clear cache after update
+    this.clearCache();
+  }
+
+  private _performSelectiveUpdate(updater: (table: Record<string, Record<string, any>>) => void): void {
+    const tables = this._storage.read() || {};
+    const table = (tables[this._name] as Record<string, Record<string, any>>) || {};
+    
+    updater(table);
+    
+    // Use update() method if available for partial updates
+    if (typeof this._storage.update === 'function') {
+      tables[this._name] = table;
+      this._storage.update(tables);
+    } else {
+      // Fallback to full write
+      tables[this._name] = table;
+      this._storage.write(tables);
+    }
+  }
+
+  private _performFullUpdate(updater: (table: Record<string, Record<string, any>>) => void): void {
     const tables = this._storage.read() || {};
     const table = (tables[this._name] as Record<string, Record<string, any>>) || {};
     
@@ -537,9 +566,6 @@ export class Table<T extends Record<string, any> = any> {
     
     tables[this._name] = table;
     this._storage.write(tables);
-    
-    // Clear cache after update
-    this.clearCache();
   }
 
   private _getCacheKey(cond: QueryLike<T>): string | null {

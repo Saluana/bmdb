@@ -17,25 +17,31 @@ export class WALJSONStorage extends WALStorage {
   }
 
   write(obj: JsonObject): void {
-    const frozen = deepFreeze(structuredClone(obj));
+    // Create a copy before freezing to avoid modifying the original
+    const copy = JSON.parse(JSON.stringify(obj));
+    const frozen = deepFreeze(copy);
     super.write(frozen);
   }
 
   update(obj: JsonObject): void {
-    const frozen = deepFreeze(structuredClone(obj));
+    // Create a copy before freezing to avoid modifying the original
+    const copy = JSON.parse(JSON.stringify(obj));
+    const frozen = deepFreeze(copy);
     super.update(frozen);
   }
 
   read(): JsonObject | null {
     const data = super.read();
-    // Return unfrozen copy so TinyDB can modify it
-    return data ? structuredClone(data) : null;
+    // Return a copy that can be modified by TinyDB
+    return data ? JSON.parse(JSON.stringify(data)) : null;
   }
 
   flush(): void {
     const currentData = this.read();
     if (currentData) {
-      const frozen = deepFreeze(structuredClone(currentData));
+      // Create a copy before freezing to avoid modifying the original
+      const copy = JSON.parse(JSON.stringify(currentData));
+      const frozen = deepFreeze(copy);
       const dataPath = (this as any).dataPath; // Access private field
       writeFileSync(dataPath, JSON.stringify(frozen, null, this.indent));
     }

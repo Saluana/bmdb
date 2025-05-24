@@ -118,13 +118,13 @@ export class WALStorage implements Storage {
     if (!tx || !tx.committed) return;
 
     // Start with the latest stable snapshot
-    let snapshot = structuredClone(this.getSnapshot(this.stableTxid));
+    let snapshot = { ...this.getSnapshot(this.stableTxid) };
 
     // Apply this transaction's operations
     for (const op of tx.operations) {
       switch (op.type) {
         case 'write':
-          snapshot = op.data;
+          snapshot = { ...op.data };
           break;
         case 'update':
           Object.assign(snapshot, op.data);
