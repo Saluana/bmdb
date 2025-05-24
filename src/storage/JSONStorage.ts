@@ -34,11 +34,21 @@ export class JSONStorage implements Storage {
   private memoryData: JsonObject = {};
   private isDirty: boolean = false;
   
+  // Read caching
+  private readCache: JsonObject | null = null;
+  private cacheValid: boolean = false;
+  
   // Snapshot configuration
   private snapshotInterval: number = 5000; // 5 seconds
   private snapshotTimer: NodeJS.Timeout | null = null;
   private maxDirtyOperations: number = 1000;
   private dirtyOperations: number = 0;
+  private snapshotInProgress: boolean = false;
+  
+  // Vector index optimization
+  private vectorRebuildTimer: NodeJS.Timeout | null = null;
+  private vectorRebuildDelay: number = 100; // 100ms delay for batching
+  private changedTables: Set<string> = new Set();
   
   constructor(
     path: string = "db.json", 
@@ -104,7 +114,9 @@ export class JSONStorage implements Storage {
   }
 
   private createSnapshot(): void {
-    if (!this.isDirty) return;
+    if (!this.isDirty || this.snapshotInProgress) return;
+    
+    this.snapshotInProgress = true;
     
     try {
       const frozen = deepFreeze(this.memoryData);
@@ -120,37 +132,114 @@ export class JSONStorage implements Storage {
       this.dirtyOperations = 0;
     } catch (error) {
       console.error('Error creating snapshot:', error);
+    } finally {
+      this.snapshotInProgress = false;
     }
   }
 
   read(): JsonObject | null {
-    // Always return a deep copy to prevent external mutations
-    return JSON.parse(JSON.stringify(this.memoryData));
+    // Use cached result if available
+    if (this.cacheValid && this.readCache) {
+      return this.shallowClone(this.readCache);
+    }
+    
+    // Create cache with shallow clone
+    this.readCache = this.shallowClone(this.memoryData);
+    this.cacheValid = true;
+    
+    return this.shallowClone(this.readCache);
+  }
+  
+  private shallowClone(obj: JsonObject): JsonObject {
+    if (!obj || typeof obj !== 'object') return obj;
+    
+    const result: JsonObject = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (Array.isArray(value)) {
+        result[key] = [...value];
+      } else if (value && typeof value === 'object') {
+        // Shallow clone one level deep for table data
+        const tableClone: any = {};
+        for (const [subKey, subValue] of Object.entries(value)) {
+          if (subValue && typeof subValue === 'object' && !Array.isArray(subValue)) {
+            tableClone[subKey] = { ...subValue };
+          } else {
+            tableClone[subKey] = subValue;
+          }
+        }
+        result[key] = tableClone;
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
   }
 
   write(obj: JsonObject): void {
-    // Merge data into memory
+    // Merge data into memory and track changed tables
     this.memoryData = { ...this.memoryData, ...obj };
+    
+    // Track which tables changed for selective vector index rebuilding
+    for (const tableName of Object.keys(obj)) {
+      this.changedTables.add(tableName);
+    }
+    
     this.markDirty();
     
-    // Rebuild vector indexes after write
-    this.rebuildVectorIndexes();
+    // Invalidate read cache
+    this.cacheValid = false;
+    
+    // Schedule deferred vector index rebuilding
+    this.scheduleVectorIndexRebuild();
   }
 
   private markDirty(): void {
     this.isDirty = true;
     this.dirtyOperations++;
     
-    // Force snapshot if too many dirty operations
+    // Force snapshot if too many dirty operations (async)
     if (this.dirtyOperations >= this.maxDirtyOperations) {
-      this.createSnapshot();
+      this.scheduleAsyncSnapshot();
     }
+  }
+  
+  private scheduleAsyncSnapshot(): void {
+    if (this.snapshotInProgress) return;
+    
+    setImmediate(() => {
+      this.createSnapshot();
+    });
+  }
+  
+  private scheduleVectorIndexRebuild(): void {
+    // Clear existing timer
+    if (this.vectorRebuildTimer) {
+      clearTimeout(this.vectorRebuildTimer);
+    }
+    
+    // Schedule rebuild with delay to batch multiple writes
+    this.vectorRebuildTimer = setTimeout(() => {
+      this.rebuildChangedVectorIndexes();
+      this.changedTables.clear();
+      this.vectorRebuildTimer = null;
+    }, this.vectorRebuildDelay);
   }
 
   close(): void {
     if (this.snapshotTimer) {
       clearInterval(this.snapshotTimer);
       this.snapshotTimer = null;
+    }
+    
+    if (this.vectorRebuildTimer) {
+      clearTimeout(this.vectorRebuildTimer);
+      this.vectorRebuildTimer = null;
+    }
+    
+    // Force any pending vector index rebuilds
+    if (this.changedTables.size > 0) {
+      this.rebuildChangedVectorIndexes();
+      this.changedTables.clear();
     }
     
     // Final snapshot
@@ -510,11 +599,22 @@ export class JSONStorage implements Storage {
       this.buildVectorIndex(indexDef);
     }
   }
+  
+  private rebuildChangedVectorIndexes(): void {
+    // Only rebuild indexes for tables that have changed
+    for (const indexDef of this.vectorIndexes.values()) {
+      if (this.changedTables.has(indexDef.tableName)) {
+        this.buildVectorIndex(indexDef);
+      }
+    }
+  }
 
   // Optimized update method
   update(obj: JsonObject): void {
-    // Deep merge for incremental updates
+    // Deep merge for incremental updates and track changed tables
     for (const [key, value] of Object.entries(obj)) {
+      this.changedTables.add(key);
+      
       if (typeof value === 'object' && value !== null && this.memoryData[key] && typeof this.memoryData[key] === 'object') {
         this.memoryData[key] = { ...this.memoryData[key] as any, ...value };
       } else {
@@ -523,7 +623,12 @@ export class JSONStorage implements Storage {
     }
     
     this.markDirty();
-    this.rebuildVectorIndexes();
+    
+    // Invalidate read cache
+    this.cacheValid = false;
+    
+    // Schedule deferred vector index rebuilding
+    this.scheduleVectorIndexRebuild();
   }
 
   // Performance monitoring
