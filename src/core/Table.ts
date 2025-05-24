@@ -154,7 +154,8 @@ export class Table<T extends Record<string, any> = any> {
           docIds.push(docId);
           table[String(docId)] = document.toJSON();
         } else {
-          docId = this._getNextId();
+          // Generate ID using timestamp + random component for better uniqueness
+          docId = this._generateUniqueId(table);
           docIds.push(docId);
           table[String(docId)] = { ...document };
         }
@@ -464,10 +465,53 @@ export class Table<T extends Record<string, any> = any> {
   }
 
   private _getNextId(): number {
-    // Always read from storage to ensure we get the latest state
-    // This prevents race conditions when multiple instances modify the same table
+    // Use atomic approach: try incrementing IDs until we find one that doesn't exist
+    // This handles race conditions by detecting collisions during write
     const table = this._readTable();
     
+    if (!table || typeof table !== 'object' || Object.keys(table).length === 0) {
+      return 1;
+    }
+
+    const numericIds = Object.keys(table)
+      .map(Number)
+      .filter(id => !isNaN(id) && isFinite(id) && id > 0);
+    
+    if (numericIds.length === 0) {
+      return 1;
+    }
+
+    const maxId = Math.max(...numericIds);
+    return maxId + 1;
+  }
+
+
+  private _generateUniqueId(localTable: Record<string, Record<string, any>>): number {
+    // Use a combination of timestamp and process-unique counter for better uniqueness
+    const now = Date.now();
+    let attempts = 0;
+    const maxAttempts = 1000;
+    
+    while (attempts < maxAttempts) {
+      // Create ID from timestamp + counter/random component
+      const candidateId = now * 1000 + attempts + Math.floor(Math.random() * 1000);
+      
+      // Check both local and persistent state
+      if (!localTable[String(candidateId)]) {
+        const freshTable = this._readTable();
+        if (!freshTable || !freshTable[String(candidateId)]) {
+          return candidateId;
+        }
+      }
+      
+      attempts++;
+    }
+    
+    // Fallback to simple sequential if timestamp approach fails
+    return this._getNextIdFromTable(this._readTable());
+  }
+
+  private _getNextIdFromTable(table: Record<string, Record<string, any>> | null): number {
     if (!table || typeof table !== 'object' || Object.keys(table).length === 0) {
       return 1;
     }

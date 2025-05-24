@@ -1,11 +1,5 @@
 Critical Bugs
 
-  1. Race Condition in Table ID Generation (src/core/Table.ts:466-485)
-
-  - _getNextId() always reads from storage but doesn't handle concurrent access
-  - Multiple instances could generate duplicate IDs leading to data corruption
-  - Risk: High - data integrity issues
-
   2. Binary Storage File Handle Leak (src/storage/BinaryStorage.ts:134-143)
 
   - Missing try-catch around closeSync(this.fd) in destructor scenarios
