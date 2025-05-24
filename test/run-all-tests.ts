@@ -22,7 +22,11 @@ const tests = [
   { name: 'Binary Storage Demo', file: 'demo-binary-storage.ts' },
   { name: 'Quick Performance', file: 'quick-perf.ts' },
   { name: 'Performance Comparison', file: 'performance-comparison.ts' },
-  { name: 'Detailed Performance', file: 'perf-test.ts' }
+  { name: 'Detailed Performance', file: 'perf-test.ts' },
+  { name: 'BTree Comprehensive', file: 'btree-comprehensive.ts' },
+  { name: 'Vector Simple Example', file: 'vector-simple-example.ts' },
+  { name: 'Vector Test', file: 'vector-test.ts' },
+  { name: 'WAL Batching Demo', file: 'wal-batching-demo.ts' }
 ];
 
 async function runTest(testFile: string): Promise<TestResult> {
