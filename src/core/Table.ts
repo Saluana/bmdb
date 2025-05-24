@@ -203,6 +203,8 @@ export class Table<T extends Record<string, any> = any> {
   private _name: string;
   private _queryCache: LRUCache<string, Document[]>;
   private _nextId: number | null = null;
+  private _documentPool: Map<number, Document> = new Map(); // Reuse Document instances
+  private _cacheInvalidationGate = new Set<string>(); // Track what needs cache invalidation
 
   constructor(
     storage: Storage, 
@@ -340,7 +342,7 @@ export class Table<T extends Record<string, any> = any> {
     
     for (const [docIdStr, doc] of pageEntries) {
       const docId = Table.documentIdClass(docIdStr);
-      data.push(new Table.documentClass(doc, docId) as Document);
+      data.push(this._getDocument(doc, docId));
     }
 
     return {
@@ -563,7 +565,7 @@ export class Table<T extends Record<string, any> = any> {
         
         if (matches) {
           const docId = Table.documentIdClass(docIdStr);
-          pooledArray.push(new Table.documentClass(doc, docId) as Document);
+          pooledArray.push(this._getDocument(doc, docId));
         }
       }
 
@@ -587,7 +589,7 @@ export class Table<T extends Record<string, any> = any> {
 
     if (docId !== undefined) {
       const doc = table[String(docId)];
-      return doc ? new Table.documentClass(doc, docId) as Document : null;
+      return doc ? this._getDocument(doc, docId) : null;
     }
 
     if (docIds !== undefined) {
@@ -596,7 +598,7 @@ export class Table<T extends Record<string, any> = any> {
       
       for (const [docIdStr, doc] of Object.entries(table)) {
         if (docIdSet.has(docIdStr)) {
-          results.push(new Table.documentClass(doc, Table.documentIdClass(docIdStr)) as Document);
+          results.push(this._getDocument(doc, Table.documentIdClass(docIdStr)));
         }
       }
       return results;
@@ -616,7 +618,7 @@ export class Table<T extends Record<string, any> = any> {
         }
         
         if (matches) {
-          return new Table.documentClass(doc, Table.documentIdClass(docIdStr)) as Document;
+          return this._getDocument(doc, Table.documentIdClass(docIdStr));
         }
       }
       return null;
@@ -806,10 +808,60 @@ export class Table<T extends Record<string, any> = any> {
     this._queryCache.clear();
   }
 
-  // Selective cache clearing for better performance
-  private _selectiveClearCache(): void {
-    // For now, clear all cache - could be optimized to clear only affected queries
-    this._queryCache.clear();
+  // Selective cache clearing for better performance with gating
+  private _selectiveClearCache(cacheKey?: string): void {
+    if (cacheKey && !this._cacheInvalidationGate.has(cacheKey)) {
+      // Skip cache invalidation if this condition hasn't changed
+      return;
+    }
+    
+    if (cacheKey) {
+      // Only clear specific cache entry
+      this._queryCache.delete(cacheKey);
+      this._cacheInvalidationGate.delete(cacheKey);
+    } else {
+      // Clear all cache - happens on structural changes
+      this._queryCache.clear();
+      this._cacheInvalidationGate.clear();
+    }
+  }
+
+  // Mark condition for cache invalidation
+  private _markForInvalidation(condition: QueryLike<T>): void {
+    const cacheKey = this._getCacheKey(condition);
+    if (cacheKey) {
+      this._cacheInvalidationGate.add(cacheKey);
+    }
+  }
+
+  // Optimized document creation with pooling
+  private _getDocument(docData: Record<string, any>, docId: number): Document {
+    // Check if we have a pooled document for this docId
+    let doc = this._documentPool.get(docId);
+    if (doc) {
+      // Update the existing document properties
+      Object.assign(doc, docData);
+      return doc;
+    }
+    
+    // Create new document and pool it
+    doc = new Table.documentClass(docData, docId) as Document;
+    this._documentPool.set(docId, doc);
+    return doc;
+  }
+
+  // Clean up document pool periodically
+  private _cleanDocumentPool(): void {
+    if (this._documentPool.size > 1000) { // Limit pool size
+      const table = this._readTable();
+      const validIds = new Set(Object.keys(table).map(Number));
+      
+      for (const [docId] of this._documentPool) {
+        if (!validIds.has(docId)) {
+          this._documentPool.delete(docId);
+        }
+      }
+    }
   }
 
   // Get object pool statistics
@@ -835,8 +887,11 @@ export class Table<T extends Record<string, any> = any> {
     const table = this._readTable();
     for (const [docIdStr, doc] of Object.entries(table)) {
       const docId = Table.documentIdClass(docIdStr);
-      yield new Table.documentClass(doc, docId) as Document;
+      yield this._getDocument(doc, docId);
     }
+    
+    // Periodic cleanup of document pool
+    this._cleanDocumentPool();
   }
 
   // Internal methods
@@ -926,8 +981,10 @@ export class Table<T extends Record<string, any> = any> {
   }
 
   private _updateTable(updater: (table: Record<string, Record<string, any>>) => void): void {
-    // Check if storage supports batch operations for better performance
-    if ((this._storage as any).writeBatch && (this._storage as any).supportsFeature && (this._storage as any).supportsFeature('batch')) {
+    // Check if MemoryStorage supports delta operations
+    if (this._storage.constructor.name === 'MemoryStorage' && (this._storage as any).updateDocument) {
+      this._performDeltaUpdate(updater);
+    } else if ((this._storage as any).writeBatch && (this._storage as any).supportsFeature && (this._storage as any).supportsFeature('batch')) {
       this._performBatchUpdate(updater);
     } else if ((this._storage as any).supportsFeature && (this._storage as any).supportsFeature('batch')) {
       this._performSelectiveUpdate(updater);
@@ -935,7 +992,7 @@ export class Table<T extends Record<string, any> = any> {
       this._performFullUpdate(updater);
     }
     
-    // Clear cache selectively for better performance
+    // Clear cache selectively for better performance - no specific key means clear all
     this._selectiveClearCache();
   }
 
@@ -965,6 +1022,42 @@ export class Table<T extends Record<string, any> = any> {
       // Fallback to full write
       tables[this._name] = table;
       this._storage.write(tables);
+    }
+  }
+
+  private _performDeltaUpdate(updater: (table: Record<string, Record<string, any>>) => void): void {
+    // Create a proxy table that captures changes
+    const tables = this._storage.read() || {};
+    const originalTable = (tables[this._name] as Record<string, Record<string, any>>) || {};
+    const changes = new Map<string, any>();
+    
+    // Create proxy to track changes
+    const proxyTable = new Proxy(originalTable, {
+      set: (target, prop, value) => {
+        if (typeof prop === 'string') {
+          changes.set(prop, value);
+        }
+        return Reflect.set(target, prop, value);
+      },
+      deleteProperty: (target, prop) => {
+        if (typeof prop === 'string') {
+          changes.set(prop, null); // Mark for deletion
+        }
+        return Reflect.deleteProperty(target, prop);
+      }
+    });
+    
+    // Apply the updater
+    updater(proxyTable);
+    
+    // Apply changes through MemoryStorage delta system
+    const memStorage = this._storage as any;
+    for (const [docId, value] of changes) {
+      if (value === null) {
+        memStorage.deleteDocument(this._name, docId);
+      } else {
+        memStorage.updateDocument(this._name, docId, value);
+      }
     }
   }
 

@@ -9,24 +9,24 @@ export class MemoryStorage implements Storage {
   private vectorIndexes: Map<string, VectorIndexDefinition> = new Map();
   private vectorData: Map<string, VectorIndex> = new Map(); // indexName -> vector index
   
+  // Delta log for in-place updates
+  private deltaLog: Map<string, Map<string, any>> = new Map(); // tableName -> docId -> changes
+  private batchPending = false;
+  private batchFlushTimeout: NodeJS.Timeout | null = null;
+  private readonly BATCH_FLUSH_DELAY = 5; // ms
+  
   constructor() {
     // Initialize with empty data
     this.data = {};
+    this.deltaLog = new Map();
   }
 
-  read(): JsonObject | null {
-    return this.data;
-  }
-  
   write(obj: JsonObject): void {
     this.data = obj;
+    this.flushDeltas(); // Ensure deltas are applied
     // Rebuild indexes after write
     this.rebuildIndexes();
     this.rebuildVectorIndexes();
-  }
-  
-  close(): void {
-    // Nothing to close for memory storage
   }
 
   async createIndex(tableName: string, field: string, options?: { unique?: boolean }): Promise<void> {
@@ -218,6 +218,92 @@ export class MemoryStorage implements Storage {
   private rebuildVectorIndexes(): void {
     for (const indexDef of this.vectorIndexes.values()) {
       this.buildVectorIndex(indexDef);
+    }
+  }
+
+  // Delta log methods for in-place updates
+  private addToDelta(tableName: string, docId: string, changes: any): void {
+    if (!this.deltaLog.has(tableName)) {
+      this.deltaLog.set(tableName, new Map());
+    }
+    
+    const tableDeltas = this.deltaLog.get(tableName)!;
+    if (tableDeltas.has(docId)) {
+      // Merge with existing changes
+      Object.assign(tableDeltas.get(docId)!, changes);
+    } else {
+      tableDeltas.set(docId, { ...changes });
+    }
+
+    // Schedule flush if not already pending
+    if (!this.batchPending) {
+      this.batchPending = true;
+      this.batchFlushTimeout = setTimeout(() => this.flushDeltas(), this.BATCH_FLUSH_DELAY);
+    }
+  }
+
+  private flushDeltas(): void {
+    if (this.batchFlushTimeout) {
+      clearTimeout(this.batchFlushTimeout);
+      this.batchFlushTimeout = null;
+    }
+    
+    if (this.deltaLog.size === 0) {
+      this.batchPending = false;
+      return;
+    }
+
+    // Apply all deltas to the main data structure
+    for (const [tableName, tableDeltas] of this.deltaLog) {
+      if (!this.data[tableName]) {
+        this.data[tableName] = {};
+      }
+      
+      const table = this.data[tableName] as JsonObject;
+      for (const [docId, changes] of tableDeltas) {
+        if (changes === null) {
+          // Deletion
+          delete table[docId];
+        } else {
+          // Update/Insert
+          if (!table[docId]) {
+            table[docId] = {};
+          }
+          Object.assign(table[docId], changes);
+        }
+      }
+    }
+
+    // Clear deltas
+    this.deltaLog.clear();
+    this.batchPending = false;
+  }
+
+  // Override write operations to use delta log
+  updateDocument(tableName: string, docId: string, changes: any): void {
+    this.addToDelta(tableName, docId, changes);
+  }
+
+  deleteDocument(tableName: string, docId: string): void {
+    this.addToDelta(tableName, docId, null);
+  }
+
+  insertDocument(tableName: string, docId: string, document: any): void {
+    this.addToDelta(tableName, docId, document);
+  }
+
+  // Override read to include deltas
+  read(): JsonObject | null {
+    // Flush any pending deltas before read
+    this.flushDeltas();
+    return this.data;
+  }
+
+  close(): void {
+    // Flush any pending deltas before closing
+    this.flushDeltas();
+    if (this.batchFlushTimeout) {
+      clearTimeout(this.batchFlushTimeout);
     }
   }
 }
