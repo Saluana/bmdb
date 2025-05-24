@@ -6,7 +6,7 @@ import type { Storage } from "./storage/Storage";
 import type { JsonObject } from "./utils/types";
 
 export abstract class Middleware implements Storage {
-  protected _storage: Storage;
+  protected _storage!: Storage;
 
   constructor(StorageCls: new (...args: any[]) => Storage) {
     this._StorageCls = StorageCls;

@@ -26,6 +26,12 @@ export class WALJSONStorage extends WALStorage {
     super.update(frozen);
   }
 
+  read(): JsonObject | null {
+    const data = super.read();
+    // Return unfrozen copy so TinyDB can modify it
+    return data ? structuredClone(data) : null;
+  }
+
   flush(): void {
     const currentData = this.read();
     if (currentData) {
