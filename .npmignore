@@ -1,0 +1,39 @@
+# Source files
+src/
+test/
+*.ts
+!dist/**/*.d.ts
+
+# Development files
+tsconfig.json
+bun.lockb
+.DS_Store
+
+# Test files
+test/
+**/*.test.*
+**/*.spec.*
+
+# Documentation
+TODOS.txt
+DOCUMENTATION.md
+PERFORMANCE_IMPROVEMENTS.md
+PHASE_4_SUMMARY.md
+VECTOR_STORAGE.md
+BINARY_STORAGE.md
+performance-results.md
+
+# Build artifacts
+node_modules/
+.temp/
+*.log
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git files
+.git/
+.gitignore

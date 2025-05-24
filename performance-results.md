@@ -1,27 +1,27 @@
 # BMDB Quick Performance Evaluation
 
-Generated: 2025-05-24T20:46:36.667Z
+Generated: 2025-05-24T21:07:02.477Z
 
 ## Memory Storage
-- Insert 1000 docs (individual): 129.6ms (7714 ops/sec)
-- Insert 1000 docs (batch): 4.8ms (209249 ops/sec)
-- Read 100 docs: 41.1ms (2436 ops/sec)
-- Update 100 docs: 41.1ms (2432 ops/sec)
+- Insert 1000 docs (individual): 126.1ms (7927 ops/sec)
+- Insert 1000 docs (batch): 2.7ms (376648 ops/sec)
+- Read 100 docs: 42.9ms (2331 ops/sec)
+- Update 100 docs: 61.3ms (1631 ops/sec)
 
 ## JSON Storage
-- Insert 1000 docs: 1129.1ms (886 ops/sec)
-- Read 100 docs: 140.9ms (710 ops/sec)
-- Update 100 docs: 112.1ms (892 ops/sec)
+- Insert 1000 docs: 529.9ms (1887 ops/sec)
+- Read 100 docs: 60.6ms (1649 ops/sec)
+- Update 100 docs: 56.9ms (1756 ops/sec)
 
 ## WAL Storage
-- Insert 1000 docs (individual): 7947.3ms (126 ops/sec)
-- Insert 1000 docs (batch): 36.2ms (27616 ops/sec)
-- Read 100 docs: 130.2ms (768 ops/sec)
-- Update 100 docs: 1744.7ms (57 ops/sec)
+- Insert 1000 docs (individual): 8098.4ms (123 ops/sec)
+- Insert 1000 docs (batch): 54.6ms (18308 ops/sec)
+- Read 100 docs: 90.9ms (1100 ops/sec)
+- Update 100 docs: 1780.9ms (56 ops/sec)
 
 ## WAL Transaction Features
-- 100 transactions: 24.0ms (4161 tx/sec)
-- 1000 concurrent reads: 9.4ms (106567 reads/sec)
+- 100 transactions: 31.3ms (3193 tx/sec)
+- 1000 concurrent reads: 3.9ms (259003 reads/sec)
 - Current txid: 102, Stable: 101
 - WAL size: 303 entries
 

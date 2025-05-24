@@ -1,11 +1,61 @@
 {
   "name": "bmdb",
-  "module": "index.ts",
-  "type": "module",
-  "devDependencies": {
-    "@types/bun": "latest"
+  "version": "1.0.0",
+  "description": "High-performance, ACID-compliant embedded database with WAL optimization, MVCC, and vector search capabilities",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
   },
-  "peerDependencies": {
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun run build:cjs && bun run build:esm && bun run build:types",
+    "build:cjs": "bun build src/index.ts --format cjs --target node --outfile dist/index.cjs",
+    "build:esm": "bun build src/index.ts --outdir dist --format esm --target node --outfile index.js",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "bun run clean && bun run build",
+    "test": "bun test",
+    "dev": "bun run src/index.ts"
+  },
+  "keywords": [
+    "database",
+    "embedded",
+    "json",
+    "wal",
+    "acid",
+    "mvcc",
+    "vector-search",
+    "nosql",
+    "typescript",
+    "high-performance"
+  ],
+  "author": "Your Name <your.email@example.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/bmdb.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/bmdb/issues"
+  },
+  "homepage": "https://github.com/yourusername/bmdb#readme",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^20.0.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {
