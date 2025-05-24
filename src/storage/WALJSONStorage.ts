@@ -7,7 +7,7 @@ export class WALJSONStorage extends WALStorage {
   private indent = 0;
 
   constructor(path: string = "db.json", opts: { indent?: number; batchSize?: number; maxBatchWaitMs?: number } = {}) {
-    super(path, opts.batchSize ?? 10, opts.maxBatchWaitMs ?? 50);
+    super(path, { batchSize: opts.batchSize ?? 1000, maxBatchWaitMs: opts.maxBatchWaitMs ?? 20 });
     this.indent = opts.indent ?? 0;
     
     // Initialize main data file if it doesn't exist

@@ -32,9 +32,9 @@ export class WALStorage implements Storage {
   private snapshots: Map<number, JsonObject> = new Map();
   private indexes: Map<string, import('./Storage').IndexDefinition> = new Map();
   private pendingOperations: WALOperation[] = [];
-  private batchSize: number = 50;
+  private batchSize: number = 1000;
   private flushTimeout: NodeJS.Timeout | null = null;
-  private maxBatchWaitMs: number = 5;
+  private maxBatchWaitMs: number = 20;
   private useMsgPack: boolean = false;
   private compactThreshold: number = 1000; // WAL operations before auto-compact
   private autoFlushInterval: NodeJS.Timeout | null = null;
@@ -42,6 +42,8 @@ export class WALStorage implements Storage {
   private compactionInProgress: boolean = false;
   private lastCompactionTime: number = 0;
   private minCompactionInterval: number = 60000; // 1 minute
+  private maxCompactionSliceSize: number = 4 * 1024 * 1024; // 4MB slices
+  private compactionWorker: Worker | null = null;
 
   constructor(path: string, options: {
     batchSize?: number;
@@ -58,8 +60,8 @@ export class WALStorage implements Storage {
     this.lockPath = `${path}.lock`;
     this.indexPath = `${path}.idx.json`;
     
-    this.batchSize = options.batchSize ?? 50;
-    this.maxBatchWaitMs = options.maxBatchWaitMs ?? 5;
+    this.batchSize = options.batchSize ?? 1000;
+    this.maxBatchWaitMs = options.maxBatchWaitMs ?? 20;
     this.useMsgPack = options.useMsgPack ?? false;
     this.compactThreshold = options.compactThreshold ?? 1000;
     this.minCompactionInterval = options.minCompactionIntervalMs ?? 60000;
@@ -189,11 +191,11 @@ export class WALStorage implements Storage {
 
   private updateStableTxid(): void {
     let highestStable = 0;
-    for (const [txid, tx] of this.transactions) {
+    Array.from(this.transactions.entries()).forEach(([txid, tx]) => {
       if (tx.committed && txid > highestStable) {
         highestStable = txid;
       }
-    }
+    });
     this.stableTxid = highestStable;
   }
 
@@ -244,36 +246,37 @@ export class WALStorage implements Storage {
   private acquireLock(): void {
     if (this.lockFd !== null) return; // Already locked
     
-    const maxRetries = 20;
-    const baseDelay = 10; // ms
-    const maxDelay = 500; // ms
-    const maxWaitTime = 5000; // 5 seconds total
-    const startTime = Date.now();
+    const maxRetries = 10; // Quick retries with minimal delay
+    const baseDelay = 0.5; // Very fast retry (0.5ms)
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        // Try to acquire lock atomically
+        // Try to acquire lock atomically using exclusive creation
         this.lockFd = openSync(this.lockPath, 'wx'); // 'x' flag ensures exclusive creation
         return; // Successfully acquired lock
       } catch (error: any) {
         if (error.code === 'EEXIST') {
-          // Check if we've exceeded maximum wait time
-          if (Date.now() - startTime > maxWaitTime) {
-            throw new Error(`Could not acquire write lock: timeout after ${maxWaitTime}ms`);
-          }
-          
-          // Lock file exists, wait and retry with exponential backoff
+          // Lock file exists, retry with minimal delay
           if (attempt < maxRetries - 1) {
-            // Calculate delay with exponential backoff: baseDelay * 2^attempt, capped at maxDelay
-            const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+            // Ultra-fast retry with linear backoff: 0.5ms, 1ms, 1.5ms, etc.
+            const delay = baseDelay * (attempt + 1);
             
-            // Use proper sleep instead of busy wait
-            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+            // Use setImmediate for sub-millisecond delays on first few attempts
+            if (attempt < 3) {
+              setImmediate(() => {});
+            } else {
+              // Micro-delay for later attempts
+              const start = Date.now();
+              while (Date.now() - start < delay) {
+                // Busy wait for very short delays
+              }
+            }
             continue;
           }
+          throw new Error(`Could not acquire lock after ${maxRetries} attempts (lock contention)`);
         }
-        // Other errors or max retries exceeded
-        throw new Error(`Could not acquire write lock after ${maxRetries} attempts: ${error.message}`);
+        // Other errors
+        throw new Error(`Lock acquisition failed: ${error.message}`);
       }
     }
   }
@@ -282,8 +285,14 @@ export class WALStorage implements Storage {
     if (this.lockFd !== null) {
       closeSync(this.lockFd);
       this.lockFd = null;
-      if (existsSync(this.lockPath)) {
-        unlinkSync(this.lockPath);
+      
+      // Clean up lock file
+      try {
+        if (existsSync(this.lockPath)) {
+          unlinkSync(this.lockPath);
+        }
+      } catch {
+        // Ignore cleanup errors - file may already be removed
       }
     }
   }
@@ -297,11 +306,11 @@ export class WALStorage implements Storage {
   getSnapshot(txid: number): JsonObject {
     // Find the highest committed txid <= requested txid
     let targetTxid = 0;
-    for (const [tid, tx] of this.transactions) {
+    Array.from(this.transactions.entries()).forEach(([tid, tx]) => {
       if (tid <= txid && tx.committed && tid > targetTxid) {
         targetTxid = tid;
       }
-    }
+    });
 
     return this.snapshots.get(targetTxid) || {};
   }
@@ -559,62 +568,111 @@ export class WALStorage implements Storage {
     this.lastCompactionTime = Date.now();
 
     try {
-      // Flush current stable state to main file
-      this.flush();
-      
-      // Remove committed transactions older than stable
-      const toRemove: number[] = [];
-      for (const [txid, tx] of this.transactions) {
-        if (txid < this.stableTxid && (tx.committed || tx.aborted)) {
-          toRemove.push(txid);
-        }
+      // Use incremental compaction for better performance
+      this.incrementalCompact();
+    } finally {
+      this.compactionInProgress = false;
+    }
+  }
+
+  private incrementalCompact(): void {
+    // Step 1: Flush current stable state to main file
+    this.flush();
+    
+    // Step 2: Identify transactions to remove in batches
+    const toRemove: number[] = [];
+    Array.from(this.transactions.entries()).forEach(([txid, tx]) => {
+      if (txid < this.stableTxid && (tx.committed || tx.aborted)) {
+        toRemove.push(txid);
       }
-      
-      for (const txid of toRemove) {
+    });
+    
+    // Step 3: Remove old transactions in chunks to avoid blocking
+    const chunkSize = 100; // Process 100 transactions at a time
+    for (let i = 0; i < toRemove.length; i += chunkSize) {
+      const chunk = toRemove.slice(i, i + chunkSize);
+      for (const txid of chunk) {
         this.transactions.delete(txid);
         this.snapshots.delete(txid);
       }
       
-      // Rewrite WAL with only active/recent transactions
-      if (existsSync(this.walPath)) {
-        unlinkSync(this.walPath);
+      // Yield control periodically for other operations
+      if (i + chunkSize < toRemove.length) {
+        setImmediate(() => {});
+      }
+    }
+    
+    // Step 4: Incremental WAL rewrite with 4MB slices
+    this.rewriteWALIncrementally();
+  }
+
+  private rewriteWALIncrementally(): void {
+    if (!existsSync(this.walPath)) {
+      return;
+    }
+
+    const tempWalPath = `${this.walPath}.tmp`;
+    let bytesProcessed = 0;
+    
+    try {
+      // Read existing WAL in chunks
+      const walContent = readFileSync(this.walPath, 'utf8');
+      const lines = walContent.trim().split('\n').filter(line => line.trim());
+      
+      // Process WAL operations in 4MB slices
+      const operations: WALOperation[] = [];
+      let currentSliceSize = 0;
+      
+      for (const line of lines) {
+        const operation = JSON.parse(line);
+        const operationSize = Buffer.byteLength(line, 'utf8');
+        
+        // Check if this operation belongs to a transaction we want to keep
+        const tx = this.transactions.get(operation.txid);
+        if (tx) {
+          operations.push(operation);
+          currentSliceSize += operationSize;
+          
+          // Process slice when it reaches 4MB or we're done
+          if (currentSliceSize >= this.maxCompactionSliceSize) {
+            this.writeOperationsSlice(operations, tempWalPath, bytesProcessed === 0);
+            bytesProcessed += currentSliceSize;
+            operations.length = 0; // Clear array
+            currentSliceSize = 0;
+            
+            // Yield control to avoid blocking
+            setImmediate(() => {});
+          }
+        }
       }
       
-      // Write remaining transactions back to WAL
-      for (const [txid, tx] of this.transactions) {
-        const beginOp: WALOperation = {
-          type: 'begin',
-          txid,
-          timestamp: Date.now(),
-          data: {}
-        };
-        this.appendToWAL(beginOp);
-        
-        for (const op of tx.operations) {
-          this.appendToWAL(op);
-        }
-        
-        if (tx.committed) {
-          const commitOp: WALOperation = {
-            type: 'commit',
-            txid,
-            timestamp: Date.now(),
-            data: {},
-            stable: true
-          };
-          this.appendToWAL(commitOp);
-        } else if (tx.aborted) {
-          const abortOp: WALOperation = {
-            type: 'abort',
-            txid,
-            timestamp: Date.now(),
-            data: {}
-          };
-          this.appendToWAL(abortOp);
-        }
+      // Write remaining operations
+      if (operations.length > 0) {
+        this.writeOperationsSlice(operations, tempWalPath, bytesProcessed === 0);
       }
-    } finally {
-      this.compactionInProgress = false;
+      
+      // Atomically replace the old WAL
+      if (existsSync(tempWalPath)) {
+        unlinkSync(this.walPath);
+        require('fs').renameSync(tempWalPath, this.walPath);
+      }
+      
+    } catch (error) {
+      // Clean up temp file on error
+      if (existsSync(tempWalPath)) {
+        unlinkSync(tempWalPath);
+      }
+      throw error;
+    }
+  }
+
+  private writeOperationsSlice(operations: WALOperation[], tempPath: string, isFirstSlice: boolean): void {
+    const content = operations.map(op => JSON.stringify(op)).join('\n') + '\n';
+    
+    if (isFirstSlice) {
+      writeFileSync(tempPath, content, 'utf8');
+    } else {
+      appendFileSync(tempPath, content, 'utf8');
     }
   }
 
@@ -743,6 +801,12 @@ export class WALStorage implements Storage {
     if (this.flushTimeout !== null) {
       clearTimeout(this.flushTimeout);
       this.flushTimeout = null;
+    }
+    
+    // Terminate compaction worker if running
+    if (this.compactionWorker) {
+      this.compactionWorker.terminate();
+      this.compactionWorker = null;
     }
     
     this.releaseLock();
@@ -893,7 +957,7 @@ export class WALStorage implements Storage {
 
   async checkCompoundUnique(tableName: string, fields: string[], values: any[], excludeDocId?: string): Promise<boolean> {
     // Check if there's a compound unique index for these fields
-    for (const indexDef of this.indexes.values()) {
+    for (const indexDef of Array.from(this.indexes.values())) {
       if (indexDef.tableName === tableName && 
           indexDef.compound && 
           indexDef.unique && 
@@ -938,7 +1002,7 @@ export class WALStorage implements Storage {
     }
     
     // Also check uncommitted transactions for potential conflicts
-    for (const transaction of this.transactions.values()) {
+    for (const transaction of Array.from(this.transactions.values())) {
       if (!transaction.committed && !transaction.aborted) {
         for (const operation of transaction.operations) {
           if (operation.type === 'write' || operation.type === 'update') {
@@ -1009,7 +1073,7 @@ export class WALStorage implements Storage {
   private saveIndexes(): void {
     try {
       const indexData: Record<string, import('./Storage').IndexDefinition> = {};
-      for (const [name, def] of this.indexes.entries()) {
+      for (const [name, def] of Array.from(this.indexes.entries())) {
         indexData[name] = def;
       }
       
