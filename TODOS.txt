@@ -6,12 +6,6 @@ Critical Bugs
 
   Performance Enhancement Opportunities
 
-  7. B-Tree Node Serialization (src/utils/BTree.ts:37-82)
-
-  - Uses TextEncoder/TextDecoder for every key serialization
-  - Could cache encoder instances or use binary key formats
-  - Improvement: 15-20% faster inserts/lookups
-
   8. WAL Operation Batching (src/storage/WALStorage.ts:145-152)
 
   - Each operation writes to disk immediately
