@@ -3,12 +3,6 @@ Critical Bugs
 
   Potential Bugs
 
-  4. BTree Cache Memory Leak (src/utils/BTree.ts:698-719)
-
-  - LRU eviction only removes one node when cache is full
-  - Can lead to gradual memory growth under high load
-  - Risk: Medium - memory exhaustion over time
-
   5. Schema Validation Performance (src/core/SchemaTable.ts:41-62)
 
   - O(n) linear scan for uniqueness validation on every insert

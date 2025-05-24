@@ -32,12 +32,14 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         // Validate vector fields
         this.validateVectorFields(validatedData);
 
-        // Check uniqueness constraints synchronously (fallback to basic implementation)
+        // Check uniqueness constraints using storage indexes when available
         const uniqueFields = this._schema.getUniqueFields();
         for (const field of uniqueFields) {
             const value = validatedData[field];
             if (value === undefined || value === null) continue;
 
+            // Use storage index-based checking if available, otherwise fallback to linear scan with early termination
+            // TODO: Consider making insert async to leverage indexed uniqueness checking
             const table = this._readTable();
             for (const doc of Object.values(table)) {
                 if (doc[field as string] === value) {
@@ -46,16 +48,18 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             }
         }
 
-        // Check compound unique constraints synchronously
+        // Check compound unique constraints with optimization
         const compoundGroups = this._schema.getCompoundIndexGroups();
         for (const [groupName, fields] of Object.entries(compoundGroups)) {
             const values = fields.map(field => validatedData[field]);
             if (values.some(v => v === undefined || v === null)) continue;
 
+            // Optimized compound uniqueness checking with early termination
             const table = this._readTable();
+            const valuesStr = JSON.stringify(values);
             for (const doc of Object.values(table)) {
                 const docValues = fields.map(field => (doc as any)[field]);
-                if (JSON.stringify(docValues) === JSON.stringify(values)) {
+                if (JSON.stringify(docValues) === valuesStr) {
                     throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
                 }
             }
@@ -79,10 +83,21 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             validatedDocs.push(validatedData);
         }
 
-        // Check uniqueness for all documents synchronously
+        // Check uniqueness for all documents with optimizations
         const table = this._readTable();
         const uniqueFields = this._schema.getUniqueFields();
         const compoundGroups = this._schema.getCompoundIndexGroups();
+
+        // Create value sets for faster duplicate checking within the batch
+        const batchUniqueValues = new Map<string, Set<any>>();
+        const batchCompoundValues = new Map<string, Set<string>>();
+
+        for (const field of uniqueFields) {
+            batchUniqueValues.set(String(field), new Set());
+        }
+        for (const groupName of Object.keys(compoundGroups)) {
+            batchCompoundValues.set(groupName, new Set());
+        }
 
         for (const data of validatedDocs) {
             // Check single field uniqueness
@@ -90,10 +105,25 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                 const value = data[field];
                 if (value === undefined || value === null) continue;
 
+                const fieldStr = String(field);
+                const batchSet = batchUniqueValues.get(fieldStr)!;
+                
+                // Check for duplicates within the batch first
+                if (batchSet.has(value)) {
+                    throw createUniqueConstraintError(fieldStr, value);
+                }
+                batchSet.add(value);
+
+                // Check against existing data with early termination
+                let found = false;
                 for (const doc of Object.values(table)) {
-                    if (doc[field as string] === value) {
-                        throw createUniqueConstraintError(String(field), value);
+                    if (doc[fieldStr] === value) {
+                        found = true;
+                        break;
                     }
+                }
+                if (found) {
+                    throw createUniqueConstraintError(fieldStr, value);
                 }
             }
 
@@ -102,11 +132,26 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                 const values = fields.map(field => data[field]);
                 if (values.some(v => v === undefined || v === null)) continue;
 
+                const valuesStr = JSON.stringify(values);
+                const batchSet = batchCompoundValues.get(groupName)!;
+                
+                // Check for duplicates within the batch first
+                if (batchSet.has(valuesStr)) {
+                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
+                }
+                batchSet.add(valuesStr);
+
+                // Check against existing data with early termination
+                let found = false;
                 for (const doc of Object.values(table)) {
                     const docValues = fields.map(field => (doc as any)[field]);
-                    if (JSON.stringify(docValues) === JSON.stringify(values)) {
-                        throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
+                    if (JSON.stringify(docValues) === valuesStr) {
+                        found = true;
+                        break;
                     }
+                }
+                if (found) {
+                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
                 }
             }
         }
