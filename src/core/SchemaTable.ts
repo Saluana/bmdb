@@ -21,6 +21,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         return this._schema;
     }
 
+
     // Override insert to add validation
     insert(document: T | Document): number {
         const data =

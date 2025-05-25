@@ -251,15 +251,13 @@ export class TinyDB {
                         // Remove the doc_id for reinsertion
                         const { doc_id, ...dataWithoutId } = doc;
                         
-                        // Try to parse the data with the schema to handle type conversions
+                        // Deserialize the data to convert JSON strings back to proper types
                         try {
-                            const validatedData = schema.validate(dataWithoutId);
+                            const deserializedData = schema.deserialize(dataWithoutId);
+                            const validatedData = schema.validate(deserializedData);
                             schemaTable.insert(validatedData);
-                        } catch (validationError) {
-                            // If validation fails, try to insert the raw data
-                            // This allows for schema evolution and handles cases where 
-                            // the stored data doesn't exactly match the current schema
-                            schemaTable.insert(dataWithoutId as unknown as T);
+                        } catch (restorationError) {
+                            console.warn('Failed to restore data for table', tableName, ':', restorationError);
                         }
                     }
                 }
