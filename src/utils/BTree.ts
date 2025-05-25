@@ -652,32 +652,11 @@ export class BTree {
             const node = this.loadNode(currentOffset);
             if (!node.isLeaf) {
                 assertInternalNodeChildren(node, 'findLeafNode');
-                // Log if -1 is found in the middle of children array
-                for (let i = 0; i < node.children.length - 1; i++) {
-                    if (node.children[i] === -1) {
-                        console.error(
-                            '[BTree.findLeafNode] -1 found in middle of children array',
-                            {
-                                node,
-                                key,
-                                path,
-                            }
-                        );
-                    }
-                }
             }
             if (node.isLeaf) {
                 return { node, path };
             } else {
                 const childIndex = node.findChildIndex(key);
-                if (childIndex < 0 || childIndex >= node.children.length) {
-                    console.error('[BTree.findLeafNode] Invalid childIndex:', {
-                        childIndex,
-                        node,
-                        key,
-                        path,
-                    });
-                }
                 currentOffset = node.children[childIndex] || -1;
             }
         }
@@ -907,24 +886,6 @@ export class BTree {
         this.saveNode(node);
         this.saveNode(parent);
 
-        // After borrow, log state for debugging
-        console.error('[BTree.borrowFromLeftSibling] After borrow:', {
-            node: {
-                keys: node.keys,
-                children: node.children,
-                offset: node.offset,
-            },
-            leftSibling: {
-                keys: leftSibling.keys,
-                children: leftSibling.children,
-                offset: leftSibling.offset,
-            },
-            parent: {
-                keys: parent.keys,
-                children: parent.children,
-                offset: parent.offset,
-            },
-        });
         assertInternalNodeChildren(node, 'borrowFromLeftSibling-node');
         assertInternalNodeChildren(
             leftSibling,
@@ -970,24 +931,6 @@ export class BTree {
         this.saveNode(node);
         this.saveNode(parent);
 
-        // After borrow, log state for debugging
-        console.error('[BTree.borrowFromRightSibling] After borrow:', {
-            node: {
-                keys: node.keys,
-                children: node.children,
-                offset: node.offset,
-            },
-            rightSibling: {
-                keys: rightSibling.keys,
-                children: rightSibling.children,
-                offset: rightSibling.offset,
-            },
-            parent: {
-                keys: parent.keys,
-                children: parent.children,
-                offset: parent.offset,
-            },
-        });
         assertInternalNodeChildren(node, 'borrowFromRightSibling-node');
         assertInternalNodeChildren(
             rightSibling,
@@ -1056,24 +999,6 @@ export class BTree {
         }
 
         if (!leftNode.isLeaf && !rightNode.isLeaf) {
-            // After merge, log state for debugging
-            console.error('[BTree.mergeNodes] After merge:', {
-                leftNode: {
-                    keys: leftNode.keys,
-                    children: leftNode.children,
-                    offset: leftNode.offset,
-                },
-                rightNode: {
-                    keys: rightNode.keys,
-                    children: rightNode.children,
-                    offset: rightNode.offset,
-                },
-                parent: {
-                    keys: parent.keys,
-                    children: parent.children,
-                    offset: parent.offset,
-                },
-            });
             assertInternalNodeChildren(leftNode, 'mergeNodes-leftNode');
             assertInternalNodeChildren(rightNode, 'mergeNodes-rightNode');
         }
@@ -1111,18 +1036,6 @@ export class BTree {
 
                 return node;
             } catch (error) {
-                // Log detailed error for debugging
-                console.error(
-                    `[BTree.loadNode] Failed to load node at offset ${offset}:`,
-                    {
-                        offset,
-                        nextNodeOffset: this.nextNodeOffset,
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                    }
-                );
                 throw new Error(
                     `Failed to load node at offset ${offset}: ${
                         error instanceof Error ? error.message : String(error)
@@ -1157,9 +1070,6 @@ export class BTree {
             const offset = this.freeNodeOffsets.pop()!;
             // Ensure the offset is properly aligned
             if (offset % BTreeNode.NODE_SIZE !== 0) {
-                console.warn(
-                    `Skipping misaligned free offset ${offset}, expected alignment to ${BTreeNode.NODE_SIZE}`
-                );
                 return this.allocateNodeOffset(); // Recursively try next offset
             }
             return offset;
@@ -1263,15 +1173,6 @@ export class BTree {
 
 function assertInternalNodeChildren(node: BTreeNode, context: string) {
     if (!node.isLeaf && node.children.length !== node.keys.length + 1) {
-        console.error(
-            `BTreeNode invariant violation (${context}): children.length != keys.length + 1`
-        );
-        console.error({
-            keys: node.keys,
-            children: node.children,
-            parentOffset: node.parentOffset,
-            offset: node.offset,
-        });
         throw new Error(
             `BTreeNode invariant violation (${context}): children.length != keys.length + 1`
         );
