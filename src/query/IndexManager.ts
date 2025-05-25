@@ -3,7 +3,7 @@
  * Provides index-aware query planning and execution
  */
 
-import { IndexedBTree, BitmapSet, BitmapUtils } from '../utils/IndexedBTree';
+import { IndexedBTree, type BitmapSet, BitmapUtils } from '../utils/IndexedBTree';
 import type { QueryInstance } from './QueryInstance';
 
 export interface IndexableCondition {

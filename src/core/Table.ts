@@ -4,7 +4,7 @@ import { CopyOnWriteObject } from "../utils/CopyOnWrite";
 import { arrayPool, resultSetPool, PooledArray, PooledResultSet } from "../utils/ObjectPool";
 import type { QueryInstance } from "../query/QueryInstance";
 import type { Storage } from "../storage/Storage";
-import { IndexManager } from "../query/IndexManager";
+import { IndexManager, type QueryPlan } from "../query/IndexManager";
 import { BitmapUtils } from "../utils/IndexedBTree";
 
 export interface PaginatedResult<T> {
@@ -573,6 +573,14 @@ export class Table<T extends Record<string, any> = any> {
       }
     }
 
+    // Try optimizing simple object queries (e.g., {name: "John"})
+    if (cond && typeof cond === 'object' && !('test' in cond) && !Array.isArray(cond)) {
+      const results = this._trySimpleObjectQuery(cond as Record<string, any>, cacheKey);
+      if (results) {
+        return results;
+      }
+    }
+
     // Fallback to full table scan
     return this._executeFullScan(cond, cacheKey);
   }
@@ -582,8 +590,8 @@ export class Table<T extends Record<string, any> = any> {
     try {
       const plan = this._indexManager.analyzeQuery(query);
       
-      // Only use index if it's significantly more selective than full scan
-      if (!plan.useIndex || plan.estimatedSelectivity > 0.5) {
+      // Only use index if it's more selective than full scan (relaxed threshold)
+      if (!plan.useIndex || plan.estimatedSelectivity > 0.8) {
         return null; // Fall back to full scan
       }
 
@@ -597,17 +605,25 @@ export class Table<T extends Record<string, any> = any> {
       const table = this._readTable();
       const results: Document[] = [];
 
+      // Check if we can skip verification for simple queries
+      const canSkipVerification = this._canSkipQueryVerification(query, plan);
+
       for (const docId of docIds) {
         const doc = table[String(docId)];
         if (doc) {
-          // Still need to verify the document matches the full query
-          // since indexes might not cover all conditions
-          try {
-            if (query.test(doc)) {
-              results.push(this._getDocument(doc, docId));
+          if (canSkipVerification) {
+            // Trust the index result for simple equality queries
+            results.push(this._getDocument(doc, docId));
+          } else {
+            // Still need to verify the document matches the full query
+            // since indexes might not cover all conditions
+            try {
+              if (query.test(doc)) {
+                results.push(this._getDocument(doc, docId));
+              }
+            } catch (error) {
+              // Skip documents that cause test errors
             }
-          } catch (error) {
-            // Skip documents that cause test errors
           }
         }
       }
@@ -617,6 +633,77 @@ export class Table<T extends Record<string, any> = any> {
       // If index execution fails, fall back to full scan
       return null;
     }
+  }
+
+  // Try to optimize simple object queries using indexes
+  private _trySimpleObjectQuery(query: Record<string, any>, cacheKey: string | null): Document[] | null {
+    const keys = Object.keys(query);
+    
+    // Only optimize single field equality queries for now
+    if (keys.length !== 1) {
+      return null;
+    }
+    
+    const field = keys[0];
+    const value = query[field];
+    
+    // Check if we have an index for this field
+    const index = this._indexManager.getOrCreateIndex(field);
+    if (!index) {
+      return null;
+    }
+    
+    try {
+      // Use index to find matching documents
+      const bitmap = index.getExact(value);
+      if (!bitmap) {
+        return [];
+      }
+      
+      const docIds = BitmapUtils.toSet(bitmap);
+      if (docIds.size === 0) {
+        return [];
+      }
+      
+      // Estimate selectivity - if too many results, fall back to scan
+      const totalDocs = Object.keys(this._readTable()).length;
+      if (docIds.size > totalDocs * 0.3) {
+        return null; // Too many results, use full scan
+      }
+      
+      const table = this._readTable();
+      const results: Document[] = [];
+      
+      for (const docId of docIds) {
+        const doc = table[String(docId)];
+        if (doc && doc[field] === value) {
+          results.push(this._getDocument(doc, docId));
+        }
+      }
+      
+      // Cache results if possible
+      if (cacheKey) {
+        this._queryCache.set(cacheKey, results.map(doc => this._cloneDocument(doc)));
+      }
+      
+      return results;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // Check if we can trust index results without re-verification
+  private _canSkipQueryVerification(query: QueryInstance<T>, plan: QueryPlan): boolean {
+    // For now, only skip verification for simple single-field equality queries
+    // This is conservative but safe
+    if (plan.indexConditions && plan.indexConditions.length === 1) {
+      const condition = plan.indexConditions[0];
+      if (condition.operator === '=' && !plan.fallbackToScan) {
+        // This is a simple equality query that the index can handle completely
+        return true;
+      }
+    }
+    return false;
   }
 
   // Execute full table scan (original implementation)
