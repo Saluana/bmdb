@@ -18,6 +18,7 @@ export class TinyDB {
     static tableClass = Table;
     static defaultTableName = '_default';
     static defaultStorageClass = JSONStorage;
+    static schemaMetadataTableName = '_bmdb_schema_tables';
 
     private _storage: Storage;
     private _opened = true;
@@ -76,17 +77,43 @@ export class TinyDB {
         try {
             const data = this._storage.read();
             if (data && typeof data === 'object') {
+                // First, load schema metadata if it exists
+                const schemaMetadata = new Map<string, any>();
+                if (data[TinyDB.schemaMetadataTableName]) {
+                    const metadataTable = data[TinyDB.schemaMetadataTableName] as Record<string, any>;
+                    for (const [docId, metadata] of Object.entries(metadataTable)) {
+                        if (metadata && typeof metadata === 'object' && metadata.tableName) {
+                            schemaMetadata.set(metadata.tableName, metadata);
+                        }
+                    }
+                }
+
+                // Then load tables, creating SchemaTable instances where appropriate
                 for (const [name, tableData] of Object.entries(data)) {
                     if (
                         typeof name === 'string' &&
+                        name !== TinyDB.schemaMetadataTableName &&
                         tableData !== null &&
                         typeof tableData === 'object'
                     ) {
-                        const table = new TinyDB.tableClass(
-                            this._storage,
-                            name
-                        );
-                        table._loadData(tableData as Record<string, any>);
+                        let table: Table<any>;
+                        
+                        // Check if this table has schema metadata
+                        const metadata = schemaMetadata.get(name);
+                        if (metadata && metadata.schemaDefinition) {
+                            // This is a schema table - we need to recreate the schema
+                            // Note: For now, we'll create a regular table and mark it for later schema restoration
+                            // The user will need to call schemaTable() again to properly restore the schema
+                            table = new TinyDB.tableClass(this._storage, name);
+                            table._loadData(tableData as Record<string, any>);
+                            // Mark this table as requiring schema restoration
+                            (table as any)._requiresSchemaRestoration = metadata;
+                        } else {
+                            // Regular table
+                            table = new TinyDB.tableClass(this._storage, name);
+                            table._loadData(tableData as Record<string, any>);
+                        }
+                        
                         this._tables.set(name, table);
                     }
                 }
@@ -121,6 +148,40 @@ export class TinyDB {
 
     get storage(): Storage {
         return this._storage;
+    }
+
+    private _getSchemaMetadataTable(): Table<any> {
+        if (!this._tables.has(TinyDB.schemaMetadataTableName)) {
+            const metadataTable = new TinyDB.tableClass(
+                this._storage,
+                TinyDB.schemaMetadataTableName
+            );
+            this._tables.set(TinyDB.schemaMetadataTableName, metadataTable);
+        }
+        return this._tables.get(TinyDB.schemaMetadataTableName)!;
+    }
+
+    private _saveSchemaMetadata(tableName: string, schema: BmDbSchema<any>): void {
+        const metadataTable = this._getSchemaMetadataTable();
+        const metadata = {
+            tableName,
+            schemaDefinition: schema.serialize(), // We'll need to add this method to BmDbSchema
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        };
+        
+        // Remove existing metadata for this table
+        const existingDocs = metadataTable.search((doc: any) => doc.tableName === tableName);
+        if (existingDocs.length > 0) {
+            metadataTable.remove((doc: any) => doc.tableName === tableName);
+        }
+        
+        metadataTable.insert(metadata);
+    }
+
+    private _removeSchemaMetadata(tableName: string): void {
+        const metadataTable = this._getSchemaMetadataTable();
+        metadataTable.remove((doc: any) => doc.tableName === tableName);
     }
 
     table<T extends Record<string, any> = any>(
@@ -170,6 +231,48 @@ export class TinyDB {
             if (existing instanceof SchemaTable) {
                 return existing as SchemaTable<T>;
             }
+            
+            // Check if this table was marked for schema restoration
+            if ((existing as any)._requiresSchemaRestoration) {
+                // Convert the regular table to a schema table
+                const schemaTable = new SchemaTable(
+                    this._storage,
+                    schema,
+                    tableName,
+                    options
+                );
+                
+                // Copy the existing data
+                const existingData = existing!.all();
+                if (existingData.length > 0) {
+                    // Clear the schema table and insert existing data
+                    schemaTable.truncate();
+                    for (const doc of existingData) {
+                        // Remove the doc_id for reinsertion
+                        const { doc_id, ...dataWithoutId } = doc;
+                        
+                        // Try to parse the data with the schema to handle type conversions
+                        try {
+                            const validatedData = schema.validate(dataWithoutId);
+                            schemaTable.insert(validatedData);
+                        } catch (validationError) {
+                            // If validation fails, try to insert the raw data
+                            // This allows for schema evolution and handles cases where 
+                            // the stored data doesn't exactly match the current schema
+                            schemaTable.insert(dataWithoutId as unknown as T);
+                        }
+                    }
+                }
+                
+                // Replace the table in our map
+                this._tables.set(tableName, schemaTable);
+                
+                // Save schema metadata
+                this._saveSchemaMetadata(tableName, schema);
+                
+                return schemaTable;
+            }
+            
             throw new Error(
                 `Table '${tableName}' already exists as a non-schema table`
             );
@@ -182,6 +285,10 @@ export class TinyDB {
             options
         );
         this._tables.set(tableName, table);
+        
+        // Save schema metadata
+        this._saveSchemaMetadata(tableName, schema);
+        
         return table;
     }
 
@@ -190,7 +297,9 @@ export class TinyDB {
             const data = this._storage.read();
             if (data && typeof data === 'object' && data !== null) {
                 return new Set(
-                    Object.keys(data).filter((key) => typeof key === 'string')
+                    Object.keys(data).filter((key) => 
+                        typeof key === 'string' && key !== TinyDB.schemaMetadataTableName
+                    )
                 );
             }
             return new Set();
@@ -210,9 +319,17 @@ export class TinyDB {
             throw new Error('Table name must be a non-empty string');
         }
 
+        // Don't allow dropping the schema metadata table directly
+        if (name === TinyDB.schemaMetadataTableName) {
+            throw new Error('Cannot drop schema metadata table');
+        }
+
         if (this._tables.has(name)) {
             this._tables.delete(name);
         }
+
+        // Remove schema metadata if it exists
+        this._removeSchemaMetadata(name);
 
         try {
             const data = this._storage.read();

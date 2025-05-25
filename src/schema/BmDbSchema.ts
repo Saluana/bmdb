@@ -147,6 +147,30 @@ export class BmDbSchema<T extends Record<string, any>> {
   clone(newTableName?: string): BmDbSchema<T> {
     return new BmDbSchema(this.zodSchema, newTableName || this.tableName);
   }
+
+  serialize(): any {
+    // For now, we'll serialize basic schema information
+    // In a full implementation, you might want to serialize the entire Zod schema
+    const fields: Record<string, any> = {};
+    
+    for (const field of Object.keys(this.zodShape) as Array<keyof T>) {
+      const meta = this.getFieldMeta(field);
+      const zodField = this.zodShape[field];
+      
+      fields[field as string] = {
+        meta: meta || {},
+        // Store basic type information (this is simplified)
+        type: zodField?._def?.typeName || 'unknown',
+        // Store other relevant zod properties as needed
+      };
+    }
+    
+    return {
+      tableName: this.tableName,
+      fields,
+      schemaVersion: '1.0.0', // For future schema evolution
+    };
+  }
 }
 
 export function createSchema<T extends Record<string, any>>(
