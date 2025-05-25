@@ -29,7 +29,7 @@ export class BmDbSchema<T extends Record<string, any>> {
     } catch (zodError: any) {
       const message = zodError.message || 'Schema validation failed';
       const path = zodError.path || [];
-      throw createValidationError(message, path, zodError);
+      throw createValidationError(message, path, zodError, this.tableName);
     }
   }
 

@@ -44,7 +44,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             const table = this._readTable();
             for (const doc of Object.values(table)) {
                 if (doc[field as string] === value) {
-                    throw createUniqueConstraintError(String(field), value);
+                    throw createUniqueConstraintError(String(field), value, this._schema.tableName);
                 }
             }
         }
@@ -61,7 +61,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             for (const doc of Object.values(table)) {
                 const docValues = fields.map(field => (doc as any)[field]);
                 if (JSON.stringify(docValues) === valuesStr) {
-                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
+                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values, this._schema.tableName);
                 }
             }
         }
@@ -111,7 +111,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                 
                 // Check for duplicates within the batch first
                 if (batchSet.has(value)) {
-                    throw createUniqueConstraintError(fieldStr, value);
+                    throw createUniqueConstraintError(fieldStr, value, this._schema.tableName);
                 }
                 batchSet.add(value);
 
@@ -124,7 +124,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                     }
                 }
                 if (found) {
-                    throw createUniqueConstraintError(fieldStr, value);
+                    throw createUniqueConstraintError(fieldStr, value, this._schema.tableName);
                 }
             }
 
@@ -138,7 +138,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                 
                 // Check for duplicates within the batch first
                 if (batchSet.has(valuesStr)) {
-                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
+                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values, this._schema.tableName);
                 }
                 batchSet.add(valuesStr);
 
@@ -152,7 +152,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                     }
                 }
                 if (found) {
-                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values);
+                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values, this._schema.tableName);
                 }
             }
         }

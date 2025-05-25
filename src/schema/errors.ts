@@ -34,19 +34,27 @@ export class BmDbUniqueConstraintError extends BmDbSchemaError {
   }
 }
 
-export function createValidationError(message: string, path: string[], zodError: any): BmDbValidationError {
+export function createValidationError(message: string, path: string[], zodError: any, tableName?: string): BmDbValidationError {
+  const enhancedMessage = tableName 
+    ? `[Table: ${tableName}] ${message}`
+    : message;
+    
   return new BmDbValidationError({
     code: 'ERR_VALIDATION_FAILED',
-    message,
+    message: enhancedMessage,
     path,
     zodError
   });
 }
 
-export function createUniqueConstraintError(field: string, value: any): BmDbUniqueConstraintError {
+export function createUniqueConstraintError(field: string, value: any, tableName?: string): BmDbUniqueConstraintError {
+  const enhancedMessage = tableName
+    ? `[Table: ${tableName}] Unique constraint violation: field '${field}' with value '${value}' already exists`
+    : `Unique constraint violation: field '${field}' with value '${value}' already exists`;
+    
   return new BmDbUniqueConstraintError({
     code: 'ERR_UNIQUE_CONSTRAINT',
-    message: `Unique constraint violation: field '${field}' with value '${value}' already exists`,
+    message: enhancedMessage,
     field,
     value
   });
