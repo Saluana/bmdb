@@ -626,7 +626,9 @@ export class Table<T extends Record<string, any> = any> {
     try {
       const table = this._readTable();
       
-      for (const [docIdStr, doc] of Object.entries(table)) {
+      // Optimize: Use direct iteration instead of Object.entries()
+      for (const docIdStr in table) {
+        const doc = table[docIdStr];
         let matches = false;
         try {
           if (typeof cond === 'function') {
@@ -671,8 +673,10 @@ export class Table<T extends Record<string, any> = any> {
       const results: Document[] = [];
       const docIdSet = new Set(docIds.map(String));
       
-      for (const [docIdStr, doc] of Object.entries(table)) {
+      // Optimize: Use direct iteration instead of Object.entries()
+      for (const docIdStr in table) {
         if (docIdSet.has(docIdStr)) {
+          const doc = table[docIdStr];
           results.push(this._getDocument(doc, Table.documentIdClass(docIdStr)));
         }
       }
@@ -680,7 +684,9 @@ export class Table<T extends Record<string, any> = any> {
     }
 
     if (cond !== undefined) {
-      for (const [docIdStr, doc] of Object.entries(table)) {
+      // Optimize: Use direct iteration instead of Object.entries()
+      for (const docIdStr in table) {
+        const doc = table[docIdStr];
         let matches = false;
         try {
           if (typeof cond === 'function') {
@@ -787,7 +793,9 @@ export class Table<T extends Record<string, any> = any> {
     const updatedIds: number[] = [];
 
     this._updateTable((table) => {
-      for (const [docIdStr, doc] of Object.entries(table)) {
+      // Optimize: Use direct iteration instead of Object.entries()
+      for (const docIdStr in table) {
+        const doc = table[docIdStr];
         for (const [fields, cond] of updates) {
           let matches = false;
           try {
@@ -1238,7 +1246,14 @@ export class Table<T extends Record<string, any> = any> {
   }
 
   private _cloneDocument(doc: Document): Document {
-    return new Table.documentClass(doc.toJSON(), doc.docId) as Document;
+    // Optimize: Use spread operator instead of toJSON() for faster cloning
+    const clonedData: Record<string, any> = {};
+    for (const key in doc) {
+      if (key !== 'docId' && key !== 'doc_id') {
+        clonedData[key] = (doc as any)[key];
+      }
+    }
+    return new Table.documentClass(clonedData, doc.docId) as Document;
   }
 
   // Create a copy-on-write isolated view of a document

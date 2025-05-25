@@ -77,3 +77,21 @@ Critical Bugs
 
   This should achieve 10x+ improvement across all storage modes by targeting the specific
   bottlenecks identified in each storage implementation.
+
+    Immediate Action Plan:
+
+  Phase 1: Core Performance Fixes
+  1. Object creation overhead - Reduce allocations in hot paths
+  2. Serialization bottleneck - Replace JSON with MessagePack/binary
+  3. Query engine inefficiency - Optimize where clause evaluation
+  4. Storage layer overhead - Streamline I/O operations
+
+  Phase 2: Structural Improvements
+  5. Add result caching for repeated queries
+  6. Implement batch operations properly
+  7. Connection pooling for concurrent access
+
+  Phase 3: Advanced Optimizations
+  8. Binary storage format to replace JSON entirely
+  9. Memory management improvements
+  10. Index optimization (though you mentioned this barely helped)
