@@ -55,6 +55,12 @@ interface MemoryMappedChunk {
     lastAccessed: number;
 }
 
+interface PendingWrite {
+    offset: number;
+    data: Buffer;
+    length: number;
+}
+
 export class BinaryStorage implements Storage {
     private fd: number = -1;
     private path: string;
@@ -65,15 +71,25 @@ export class BinaryStorage implements Storage {
     private mmapChunks: Map<number, MemoryMappedChunk> = new Map();
     private maxCacheSize: number = 16; // Maximum number of cached chunks
     private mmapEnabled: boolean = true;
+    
+    // Write batching system
+    private pendingWrites: PendingWrite[] = [];
+    private batchTimer: NodeJS.Timeout | null = null;
+    private batchSizeLimit: number = 10; // Batch up to 10 writes
+    private batchTimeLimit: number = 10; // Flush after 10ms
 
     constructor(path: string = 'db.bmdb', options: { 
         maxCacheSize?: number; 
         mmapEnabled?: boolean;
         chunkSize?: number;
+        batchSize?: number;
+        batchTimeMs?: number;
     } = {}) {
         this.path = path;
         this.maxCacheSize = options.maxCacheSize ?? 16;
         this.mmapEnabled = options.mmapEnabled ?? true;
+        this.batchSizeLimit = options.batchSize ?? 10;
+        this.batchTimeLimit = options.batchTimeMs ?? 10;
 
         // Initialize B-tree with memory-mapped file I/O callbacks
         this.btree = new BTree(
@@ -102,6 +118,41 @@ export class BinaryStorage implements Storage {
         process.on('SIGTERM', cleanup);
         process.on('uncaughtException', cleanup);
         process.on('unhandledRejection', cleanup);
+    }
+    
+    private scheduleBatchWrite(offset: number, data: Buffer): void {
+        this.pendingWrites.push({ offset, data, length: data.length });
+        
+        if (this.pendingWrites.length >= this.batchSizeLimit) {
+            this.flushBatchWrites();
+        } else if (!this.batchTimer) {
+            this.batchTimer = setTimeout(() => {
+                this.flushBatchWrites();
+            }, this.batchTimeLimit);
+        }
+    }
+    
+    private flushBatchWrites(): void {
+        if (this.pendingWrites.length === 0) return;
+        
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
+        
+        // Sort writes by offset for better I/O performance
+        this.pendingWrites.sort((a, b) => a.offset - b.offset);
+        
+        try {
+            for (const write of this.pendingWrites) {
+                const bytesWritten = writeSync(this.fd, write.data, 0, write.length, write.offset);
+                if (bytesWritten !== write.length) {
+                    throw new Error(`Expected to write ${write.length} bytes, but wrote ${bytesWritten}`);
+                }
+            }
+        } finally {
+            this.pendingWrites = [];
+        }
     }
 
     read(): JsonObject | null {
@@ -171,7 +222,10 @@ export class BinaryStorage implements Storage {
     }
 
     close(): void {
-        // Flush all dirty memory-mapped chunks first
+        // Flush any pending batch writes first
+        this.flushBatchWrites();
+        
+        // Flush all dirty memory-mapped chunks
         this.flushAllChunks();
         
         // Clear memory-mapped chunks cache
@@ -208,15 +262,8 @@ export class BinaryStorage implements Storage {
         // Find space for document
         const offset = this.allocateDocumentSpace(data.length);
 
-        // Write document data
-        try {
-            const bytesWritten = writeSync(this.fd, data, 0, data.length, offset);
-            if (bytesWritten !== data.length) {
-                throw new Error(`Expected to write ${data.length} bytes, but wrote ${bytesWritten}`);
-            }
-        } catch (error) {
-            throw new Error(`Failed to write document data: ${error instanceof Error ? error.message : String(error)}`);
-        }
+        // Schedule document data write using batch system
+        this.scheduleBatchWrite(offset, Buffer.from(data));
 
         // Update B-tree index
         const entry: BTreeEntry = {

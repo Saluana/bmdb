@@ -12,6 +12,7 @@ import {
   unlinkSync, 
   statSync
 } from "fs";
+import { promises as fs } from "fs";
 
 /**
  * High-performance JSON storage that prioritizes speed over frequent durability.
@@ -113,7 +114,7 @@ export class JSONStorage implements Storage {
     }, this.snapshotInterval);
   }
 
-  private createSnapshot(): void {
+  private async createSnapshot(): Promise<void> {
     if (!this.isDirty || this.snapshotInProgress) return;
     
     this.snapshotInProgress = true;
@@ -123,9 +124,9 @@ export class JSONStorage implements Storage {
       
       if (this.useMsgPack) {
         const data = MessagePackUtil.encode(frozen);
-        writeFileSync(this.path, data);
+        await fs.writeFile(this.path, data).catch(console.error);
       } else {
-        writeFileSync(this.path, JSON.stringify(frozen, null, 0));
+        await fs.writeFile(this.path, JSON.stringify(frozen, null, 0)).catch(console.error);
       }
       
       this.isDirty = false;
@@ -268,7 +269,7 @@ export class JSONStorage implements Storage {
         name: indexName
       };
       
-      this.writeIndexes(indexes);
+      await this.writeIndexes(indexes);
     } finally {
       await this.releaseWriteLock();
     }
@@ -288,7 +289,7 @@ export class JSONStorage implements Storage {
         name: indexName
       };
       
-      this.writeIndexes(indexes);
+      await this.writeIndexes(indexes);
     } finally {
       await this.releaseWriteLock();
     }
@@ -299,7 +300,7 @@ export class JSONStorage implements Storage {
     try {
       const indexes = this.readIndexes();
       delete indexes[indexName];
-      this.writeIndexes(indexes);
+      await this.writeIndexes(indexes);
     } finally {
       await this.releaseWriteLock();
     }
@@ -559,12 +560,12 @@ export class JSONStorage implements Storage {
     }
   }
 
-  private writeIndexes(indexes: Record<string, IndexDefinition>): void {
+  private async writeIndexes(indexes: Record<string, IndexDefinition>): Promise<void> {
     if (this.useMsgPack) {
       const data = MessagePackUtil.encode(indexes);
-      writeFileSync(this.indexPath, data);
+      await fs.writeFile(this.indexPath, data).catch(console.error);
     } else {
-      writeFileSync(this.indexPath, JSON.stringify(indexes, null, 0));
+      await fs.writeFile(this.indexPath, JSON.stringify(indexes, null, 0)).catch(console.error);
     }
   }
 

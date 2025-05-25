@@ -134,3 +134,14 @@ console.log('Expected improvements:');
 console.log('- Simple query execution: 149K ops/sec (up from 117K)');
 console.log('- Function-based query: 201K ops/sec (up from 140K)');
 console.log('- Property access optimizations: 2-3x faster');
+
+// Clean up test files and exit
+try {
+    await jsonStorage.close?.();
+    await walJsonStorage.close?.();
+    await binaryStorage.close?.();
+} catch (e) {
+    // Ignore cleanup errors
+}
+
+process.exit(0);
