@@ -16,6 +16,8 @@ export type { WALOperation, Transaction } from './storage/WALStorage';
 // Query exports
 export { QueryInstance } from './query/QueryInstance';
 export { Query, QueryFactory, where } from './query/where';
+export { IndexManager } from './query/IndexManager';
+export type { IndexableCondition, QueryPlan } from './query/IndexManager';
 
 // Operations exports
 export * as operations from './operations';
@@ -42,6 +44,8 @@ export type {
 export { LRUCache } from './utils/LRUCache';
 export { VectorUtils } from './utils/VectorUtils';
 export type { Vector, VectorSearchResult, VectorIndex } from './utils/VectorUtils';
+export { IndexedBTree, BitmapUtils } from './utils/IndexedBTree';
+export type { IndexedBTreeEntry, BitmapSet } from './utils/IndexedBTree';
 
 // Schema exports (V2)
 export { BmDbSchema, createSchema } from './schema/BmDbSchema';

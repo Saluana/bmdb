@@ -4,6 +4,8 @@ import { CopyOnWriteObject } from "../utils/CopyOnWrite";
 import { arrayPool, resultSetPool, PooledArray, PooledResultSet } from "../utils/ObjectPool";
 import type { QueryInstance } from "../query/QueryInstance";
 import type { Storage } from "../storage/Storage";
+import { IndexManager } from "../query/IndexManager";
+import { BitmapUtils } from "../utils/IndexedBTree";
 
 export interface PaginatedResult<T> {
   data: T[];
@@ -205,18 +207,25 @@ export class Table<T extends Record<string, any> = any> {
   private _nextId: number | null = null;
   private _documentPool: Map<number, Document> = new Map(); // Reuse Document instances
   private _cacheInvalidationGate = new Set<string>(); // Track what needs cache invalidation
+  private _indexManager: IndexManager;
 
   constructor(
     storage: Storage, 
     name: string, 
-    options: { cacheSize?: number; persistEmpty?: boolean } = {}
+    options: { cacheSize?: number; persistEmpty?: boolean; enableIndexing?: boolean } = {}
   ) {
     this._storage = storage;
     this._name = name;
     this._queryCache = new LRUCache(options.cacheSize ?? Table.defaultQueryCacheCapacity);
+    this._indexManager = new IndexManager();
 
     if (options.persistEmpty) {
       this._updateTable(() => {});
+    }
+
+    // Build indexes from existing data if indexing is enabled
+    if (options.enableIndexing !== false) {
+      this._rebuildIndexes();
     }
   }
 
@@ -243,17 +252,20 @@ export class Table<T extends Record<string, any> = any> {
       docId = this._getNextId();
     }
 
+    const docData = document instanceof Document ? 
+      document.toJSON() : 
+      { ...document };
+
     this._updateTable((table) => {
       if (String(docId) in table) {
         throw new Error(`Document with ID ${docId} already exists`);
       }
       
-      const docData = document instanceof Document ? 
-        document.toJSON() : 
-        { ...document };
-      
       table[String(docId)] = docData;
     });
+
+    // Update indexes
+    this._indexManager.addDocument(docId, docData);
 
     return docId;
   }
@@ -535,7 +547,7 @@ export class Table<T extends Record<string, any> = any> {
     return combiner(chunkResults);
   }
 
-  // Search for documents
+  // Search for documents with index-aware optimization
   search(cond: QueryLike<T>): Document[] {
     // Check cache first
     const cacheKey = this._getCacheKey(cond);
@@ -546,6 +558,69 @@ export class Table<T extends Record<string, any> = any> {
       }
     }
 
+    // Try index-aware execution for QueryInstance objects
+    if (cond && typeof cond === 'object' && 'test' in cond && typeof (cond as any)._hash !== 'undefined') {
+      const queryInstance = cond as QueryInstance<T>;
+      const results = this._executeIndexAwareQuery(queryInstance);
+      
+      // Cache results if cacheable and we got results from index
+      if (results && cacheKey) {
+        this._queryCache.set(cacheKey, results.map(doc => this._cloneDocument(doc)));
+      }
+      
+      if (results) {
+        return results;
+      }
+    }
+
+    // Fallback to full table scan
+    return this._executeFullScan(cond, cacheKey);
+  }
+
+  // Execute query using indexes when possible
+  private _executeIndexAwareQuery(query: QueryInstance<T>): Document[] | null {
+    try {
+      const plan = this._indexManager.analyzeQuery(query);
+      
+      // Only use index if it's significantly more selective than full scan
+      if (!plan.useIndex || plan.estimatedSelectivity > 0.5) {
+        return null; // Fall back to full scan
+      }
+
+      const bitmap = this._indexManager.executeIndexQuery(plan);
+      if (!bitmap || BitmapUtils.isEmpty(bitmap)) {
+        return [];
+      }
+
+      // Convert bitmap to document results
+      const docIds = BitmapUtils.toSet(bitmap);
+      const table = this._readTable();
+      const results: Document[] = [];
+
+      for (const docId of docIds) {
+        const doc = table[String(docId)];
+        if (doc) {
+          // Still need to verify the document matches the full query
+          // since indexes might not cover all conditions
+          try {
+            if (query.test(doc)) {
+              results.push(this._getDocument(doc, docId));
+            }
+          } catch (error) {
+            // Skip documents that cause test errors
+          }
+        }
+      }
+
+      return results;
+    } catch (error) {
+      // If index execution fails, fall back to full scan
+      return null;
+    }
+  }
+
+  // Execute full table scan (original implementation)
+  private _executeFullScan(cond: QueryLike<T>, cacheKey: string | null): Document[] {
     // Use pooled array for better memory management
     const pooledArray = arrayPool.borrow();
     try {
@@ -647,42 +722,57 @@ export class Table<T extends Record<string, any> = any> {
     docIds?: number[]
   ): number[] {
     const updatedIds: number[] = [];
+    const oldDocuments = new Map<number, Record<string, any>>();
+
+    // First pass: collect old documents for index updates
+    const table = this._readTable();
+    if (docIds !== undefined) {
+      for (const docId of docIds) {
+        const doc = table[String(docId)];
+        if (doc) {
+          oldDocuments.set(docId, { ...doc });
+        }
+      }
+    } else if (cond !== undefined) {
+      for (const [docIdStr, doc] of Object.entries(table)) {
+        let matches = false;
+        try {
+          if (typeof cond === 'function') {
+            matches = cond(doc);
+          } else if (cond && typeof cond === 'object' && 'test' in cond) {
+            matches = (cond as any).test(doc);
+          }
+        } catch (error) {
+          matches = false;
+        }
+        
+        if (matches) {
+          const docId = Table.documentIdClass(docIdStr);
+          oldDocuments.set(docId, { ...doc });
+        }
+      }
+    } else {
+      // Update all documents
+      for (const [docIdStr, doc] of Object.entries(table)) {
+        const docId = Table.documentIdClass(docIdStr);
+        oldDocuments.set(docId, { ...doc });
+      }
+    }
 
     const performUpdate = typeof fields === 'function' ? 
       (doc: Record<string, any>) => fields(doc) :
       (doc: Record<string, any>) => Object.assign(doc, fields);
 
+    // Second pass: perform updates
     this._updateTable((table) => {
-      if (docIds !== undefined) {
-        for (const docId of docIds) {
-          performUpdate(table[String(docId)]);
-          updatedIds.push(docId);
-        }
-      } else if (cond !== undefined) {
-        for (const [docIdStr, doc] of Object.entries(table)) {
-          let matches = false;
-          try {
-            if (typeof cond === 'function') {
-              matches = cond(doc);
-            } else if (cond && typeof cond === 'object' && 'test' in cond) {
-              matches = (cond as any).test(doc);
-            }
-          } catch (error) {
-            matches = false;
-          }
-          
-          if (matches) {
-            const docId = Table.documentIdClass(docIdStr);
-            performUpdate(doc);
-            updatedIds.push(docId);
-          }
-        }
-      } else {
-        // Update all documents
-        for (const [docIdStr, doc] of Object.entries(table)) {
-          const docId = Table.documentIdClass(docIdStr);
+      for (const [docId, oldDoc] of oldDocuments) {
+        const doc = table[String(docId)];
+        if (doc) {
           performUpdate(doc);
           updatedIds.push(docId);
+          
+          // Update indexes
+          this._indexManager.updateDocument(docId, oldDoc, doc);
         }
       }
     });
@@ -761,31 +851,52 @@ export class Table<T extends Record<string, any> = any> {
   // Remove documents
   remove(cond?: QueryLike<T>, docIds?: number[]): number[] {
     const removedIds: number[] = [];
+    const removedDocs = new Map<number, Record<string, any>>();
 
+    // First collect documents to remove for index updates
+    const table = this._readTable();
+    
     if (docIds !== undefined) {
-      this._updateTable((table) => {
-        for (const docId of docIds) {
-          delete table[String(docId)];
-          removedIds.push(docId);
+      for (const docId of docIds) {
+        const doc = table[String(docId)];
+        if (doc) {
+          removedDocs.set(docId, doc);
         }
-      });
-      return removedIds;
-    }
-
-    if (cond !== undefined) {
-      this._updateTable((table) => {
-        for (const [docIdStr, doc] of Object.entries(table)) {
-          if (typeof cond === 'function' ? cond(doc) : cond.test(doc)) {
-            const docId = Table.documentIdClass(docIdStr);
-            delete table[docIdStr];
-            removedIds.push(docId);
+      }
+    } else if (cond !== undefined) {
+      for (const [docIdStr, doc] of Object.entries(table)) {
+        let matches = false;
+        try {
+          if (typeof cond === 'function') {
+            matches = cond(doc);
+          } else if (cond && typeof cond === 'object' && 'test' in cond) {
+            matches = (cond as any).test(doc);
           }
+        } catch (error) {
+          matches = false;
         }
-      });
-      return removedIds;
+        
+        if (matches) {
+          const docId = Table.documentIdClass(docIdStr);
+          removedDocs.set(docId, doc);
+        }
+      }
+    } else {
+      throw new Error('Use truncate() to remove all documents');
     }
 
-    throw new Error('Use truncate() to remove all documents');
+    // Remove from table and indexes
+    this._updateTable((table) => {
+      for (const [docId, doc] of removedDocs) {
+        delete table[String(docId)];
+        removedIds.push(docId);
+        
+        // Update indexes
+        this._indexManager.removeDocument(docId, doc);
+      }
+    });
+
+    return removedIds;
   }
 
   // Clear all documents
@@ -796,6 +907,9 @@ export class Table<T extends Record<string, any> = any> {
       }
     });
     this._nextId = null;
+    
+    // Clear all indexes
+    this._indexManager.clearAllIndexes();
   }
 
   // Count documents
@@ -1142,6 +1256,82 @@ export class Table<T extends Record<string, any> = any> {
     };
     
     return isolatedDoc;
+  }
+
+  // Rebuild all indexes from current data
+  private _rebuildIndexes(): void {
+    const table = this._readTable();
+    const documents: Array<{ docId: number; doc: Record<string, any> }> = [];
+    
+    for (const [docIdStr, doc] of Object.entries(table)) {
+      const docId = Table.documentIdClass(docIdStr);
+      documents.push({ docId, doc });
+    }
+
+    // Get all unique field names
+    const fieldNames = new Set<string>();
+    for (const { doc } of documents) {
+      for (const field of Object.keys(doc)) {
+        fieldNames.add(field);
+      }
+    }
+
+    // Rebuild index for each field
+    for (const fieldName of fieldNames) {
+      this._indexManager.rebuildIndex(fieldName, documents);
+    }
+  }
+
+  // Public method to rebuild indexes for specific field
+  rebuildIndex(fieldName: string): void {
+    const table = this._readTable();
+    const documents: Array<{ docId: number; doc: Record<string, any> }> = [];
+    
+    for (const [docIdStr, doc] of Object.entries(table)) {
+      const docId = Table.documentIdClass(docIdStr);
+      documents.push({ docId, doc });
+    }
+
+    this._indexManager.rebuildIndex(fieldName, documents);
+  }
+
+  // Get available indexes
+  getAvailableIndexes(): string[] {
+    return this._indexManager.getAvailableIndexes();
+  }
+
+  // Get index statistics
+  getIndexStats(fieldName?: string): any {
+    if (fieldName) {
+      return this._indexManager.getIndexStats(fieldName);
+    }
+    
+    const stats: Record<string, any> = {};
+    for (const field of this._indexManager.getAvailableIndexes()) {
+      stats[field] = this._indexManager.getIndexStats(field);
+    }
+    return stats;
+  }
+
+  // Enable/disable indexing for new documents
+  setIndexingEnabled(enabled: boolean): void {
+    if (!enabled) {
+      this._indexManager.clearAllIndexes();
+    } else {
+      this._rebuildIndexes();
+    }
+  }
+
+  // Create index for specific field (explicit index creation)
+  createIndex(fieldName: string): void {
+    this.rebuildIndex(fieldName);
+  }
+
+  // Drop index for specific field
+  dropIndex(fieldName: string): void {
+    // Note: IndexManager doesn't expose a dropIndex method yet
+    // This would need to be implemented in IndexManager
+    console.warn(`Drop index not implemented for field: ${fieldName}`);
   }
 
   // String representation

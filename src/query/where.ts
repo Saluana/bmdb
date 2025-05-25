@@ -104,47 +104,66 @@ export class Query {
     );
   }
 
-  // Comparison operations
+  // Comparison operations - generate index-friendly hashes
   __eq__(rhs: any): QueryInstance {
     return this._generateTest(
       (value) => value === rhs,
-      ['==', this._path, freeze(rhs)]
+      this._createFieldOpHash('=', rhs)
     );
   }
 
   __ne__(rhs: any): QueryInstance {
     return this._generateTest(
       (value) => value !== rhs,
-      ['!=', this._path, freeze(rhs)]
+      this._createFieldOpHash('!=', rhs)
     );
   }
 
   __lt__(rhs: any): QueryInstance {
     return this._generateTest(
       (value) => value < rhs,
-      ['<', this._path, rhs]
+      this._createFieldOpHash('<', rhs)
     );
   }
 
   __le__(rhs: any): QueryInstance {
     return this._generateTest(
       (value) => value <= rhs,
-      ['<=', this._path, rhs]
+      this._createFieldOpHash('<=', rhs)
     );
   }
 
   __gt__(rhs: any): QueryInstance {
     return this._generateTest(
       (value) => value > rhs,
-      ['>', this._path, rhs]
+      this._createFieldOpHash('>', rhs)
     );
   }
 
   __ge__(rhs: any): QueryInstance {
     return this._generateTest(
       (value) => value >= rhs,
-      ['>=', this._path, rhs]
+      this._createFieldOpHash('>=', rhs)
     );
+  }
+
+  // Create index-friendly hash for field operations
+  private _createFieldOpHash(operator: string, value: any, value2?: any): any[] {
+    // For single field access, create simple hash
+    if (this._path.length === 1 && typeof this._path[0] === 'string') {
+      const baseHash = ['field_op', this._path[0], operator, freeze(value)];
+      if (value2 !== undefined) {
+        baseHash.push(freeze(value2));
+      }
+      return baseHash;
+    }
+    
+    // For complex paths, fall back to original format
+    const baseHash = [operator, this._path, freeze(value)];
+    if (value2 !== undefined) {
+      baseHash.push(freeze(value2));
+    }
+    return baseHash;
   }
 
   // Existence check
@@ -254,11 +273,24 @@ export class Query {
     return this._generateTest(testFunc, ['all', this._path, freeze(cond)]);
   }
 
-  // One of condition
+  // One of condition - index-friendly IN clause
   oneOf(items: any[]): QueryInstance {
     return this._generateTest(
       (value) => items.includes(value),
-      ['one_of', this._path, freeze(items)]
+      this._createFieldOpHash('in', items)
+    );
+  }
+
+  // IN clause alias
+  in(items: any[]): QueryInstance {
+    return this.oneOf(items);
+  }
+
+  // Range query (BETWEEN)
+  between(min: any, max: any): QueryInstance {
+    return this._generateTest(
+      (value) => value >= min && value <= max,
+      this._createFieldOpHash('between', min, max)
     );
   }
 
