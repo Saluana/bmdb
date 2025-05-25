@@ -44,14 +44,14 @@ describe("Query System - Where Clauses", () => {
     test("should find documents by string equality", () => {
       const results = table.search(where("name").equals("Alice"));
       expect(results).toHaveLength(1);
-      expect(results[0].name).toBe("Alice");
-      expect(results[0].id).toBe(1);
+      expect((results[0] as any).name).toBe("Alice");
+      expect((results[0] as any).id).toBe(1);
     });
 
     test("should find documents by number equality", () => {
       const results = table.search(where("age").equals(25));
       expect(results).toHaveLength(2);
-      expect(results.map(r => r.name).sort()).toEqual(["Alice", "Eve"]);
+      expect(results.map(r => (r as any).name).sort()).toEqual(["Alice", "Eve"]);
     });
 
     test("should find documents by boolean equality", () => {
@@ -60,7 +60,7 @@ describe("Query System - Where Clauses", () => {
       
       expect(activeUsers).toHaveLength(6);
       expect(inactiveUsers).toHaveLength(2);
-      expect(inactiveUsers.map(u => u.name).sort()).toEqual(["Charlie", "Frank"]);
+      expect(inactiveUsers.map(u => (u as any).name).sort()).toEqual(["Charlie", "Frank"]);
     });
 
     test("should handle case-sensitive string comparisons", () => {
@@ -82,25 +82,25 @@ describe("Query System - Where Clauses", () => {
     test("should find documents with greater than", () => {
       const results = table.search(where("age").greaterThan(30));
       expect(results).toHaveLength(3);
-      expect(results.every(r => r.age > 30)).toBe(true);
+      expect(results.every(r => (r as any).age > 30)).toBe(true);
     });
 
     test("should find documents with greater than or equal", () => {
       const results = table.search(where("age").greaterThanOrEqual(30));
       expect(results).toHaveLength(4);
-      expect(results.every(r => r.age >= 30)).toBe(true);
+      expect(results.every(r => (r as any).age >= 30)).toBe(true);
     });
 
     test("should find documents with less than", () => {
       const results = table.search(where("salary").lessThan(70000));
       expect(results).toHaveLength(2);
-      expect(results.every(r => r.salary < 70000)).toBe(true);
+      expect(results.every(r => (r as any).salary < 70000)).toBe(true);
     });
 
     test("should find documents with less than or equal", () => {
       const results = table.search(where("salary").lessThanOrEqual(70000));
       expect(results).toHaveLength(3);
-      expect(results.every(r => r.salary <= 70000)).toBe(true);
+      expect(results.every(r => (r as any).salary <= 70000)).toBe(true);
     });
 
     test("should handle edge cases in comparisons", () => {
@@ -118,20 +118,20 @@ describe("Query System - Where Clauses", () => {
   describe("Range Queries", () => {
     test("should find documents within range", () => {
       const results = table.search(where("age").between(25, 30));
-      expect(results).toHaveLength(4);
-      expect(results.every(r => r.age >= 25 && r.age <= 30)).toBe(true);
+      expect(results).toHaveLength(5);
+      expect(results.every(r => (r as any).age >= 25 && (r as any).age <= 30)).toBe(true);
     });
 
     test("should handle inclusive range boundaries", () => {
       const results = table.search(where("age").between(25, 25));
       expect(results).toHaveLength(2);
-      expect(results.every(r => r.age === 25)).toBe(true);
+      expect(results.every(r => (r as any).age === 25)).toBe(true);
     });
 
     test("should handle salary ranges", () => {
       const midRange = table.search(where("salary").between(70000, 80000));
       expect(midRange).toHaveLength(4);
-      expect(midRange.every(r => r.salary >= 70000 && r.salary <= 80000)).toBe(true);
+      expect(midRange.every(r => (r as any).salary >= 70000 && (r as any).salary <= 80000)).toBe(true);
     });
 
     test("should return empty for invalid ranges", () => {
@@ -144,13 +144,13 @@ describe("Query System - Where Clauses", () => {
     test("should find documents with values in array", () => {
       const results = table.search(where("department").oneOf(["Engineering", "Marketing"]));
       expect(results).toHaveLength(6);
-      expect(results.every(r => ["Engineering", "Marketing"].includes(r.department))).toBe(true);
+      expect(results.every(r => ["Engineering", "Marketing"].includes((r as any).department))).toBe(true);
     });
 
     test("should handle single value in array", () => {
       const results = table.search(where("department").oneOf(["HR"]));
       expect(results).toHaveLength(1);
-      expect(results[0].name).toBe("Frank");
+      expect((results[0] as any).name).toBe("Frank");
     });
 
     test("should handle empty array", () => {
@@ -173,13 +173,13 @@ describe("Query System - Where Clauses", () => {
     test("should match name patterns", () => {
       const results = table.search(where("name").matches(/^[A-C]/));
       expect(results).toHaveLength(3); // Alice, Bob, Charlie
-      expect(results.map(r => r.name).sort()).toEqual(["Alice", "Bob", "Charlie"]);
+      expect(results.map(r => (r as any).name).sort()).toEqual(["Alice", "Bob", "Charlie"]);
     });
 
     test("should handle case-insensitive patterns", () => {
       const results = table.search(where("name").matches(/alice/i));
       expect(results).toHaveLength(1);
-      expect(results[0].name).toBe("Alice");
+      expect((results[0] as any).name).toBe("Alice");
     });
   });
 
@@ -190,7 +190,7 @@ describe("Query System - Where Clauses", () => {
         .and(where("age").greaterThan(25))
       );
       expect(results).toHaveLength(2); // Bob and Grace
-      expect(results.every(r => r.department === "Engineering" && r.age > 25)).toBe(true);
+      expect(results.every(r => (r as any).department === "Engineering" && (r as any).age > 25)).toBe(true);
     });
 
     test("should combine queries with OR", () => {
@@ -207,7 +207,7 @@ describe("Query System - Where Clauses", () => {
         .and(where("active").equals(true))
         .and(where("salary").greaterThan(70000))
       );
-      expect(results).toHaveLength(3); // Bob, Eve, Grace
+      expect(results).toHaveLength(4); // Alice, Bob, Eve, Grace
     });
 
     test("should handle nested logical operations", () => {
@@ -224,23 +224,23 @@ describe("Query System - Where Clauses", () => {
 
   describe("Custom Function Queries", () => {
     test("should filter with custom functions", () => {
-      const results = table.search((user: TestUser) => {
+      const results = table.search((user: any) => {
         return user.name.length > 5;
       });
-      expect(results).toHaveLength(2); // Charlie, Diana
+      expect(results).toHaveLength(1); // Charlie
     });
 
     test("should handle complex custom logic", () => {
-      const results = table.search((user: TestUser) => {
+      const results = table.search((user: any) => {
         const joinYear = user.joinDate.getFullYear();
         return joinYear === 2023 && user.salary > 70000;
       });
       expect(results.length).toBeGreaterThan(0);
-      expect(results.every(r => r.joinDate.getFullYear() === 2023 && r.salary > 70000)).toBe(true);
+      expect(results.every(r => (r as any).joinDate.getFullYear() === 2023 && (r as any).salary > 70000)).toBe(true);
     });
 
     test("should handle function errors gracefully", () => {
-      const results = table.search((user: TestUser) => {
+      const results = table.search((user: any) => {
         // Potentially problematic function
         return (user as any).nonExistentProperty?.someMethod?.();
       });

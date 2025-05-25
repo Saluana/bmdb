@@ -322,6 +322,14 @@ export class Table<T extends Record<string, any> = any> {
             }
         });
 
+        // Update indexes for all inserted documents
+        for (let i = 0; i < documents.length; i++) {
+            const document = documents[i];
+            const docId = docIds[i];
+            const docData = document instanceof Document ? document.toJSON() : { ...document };
+            this._indexManager.addDocument(docId, docData);
+        }
+
         return docIds;
     }
 

@@ -168,6 +168,21 @@ export class IndexManager {
 
   // Analyze query and create execution plan
   analyzeQuery(query: QueryInstance<any>): QueryPlan {
+    // Check if query contains OR operations - if so, fall back to full scan
+    if (this.containsOrOperation(query)) {
+      const costs = this.estimateQueryCosts([]);
+      return {
+        useIndex: false,
+        indexConditions: [],
+        fallbackToScan: true,
+        estimatedSelectivity: 1.0,
+        estimatedCost: costs.fullScanCost,
+        executionStrategy: 'full_scan',
+        confidence: 0.5, // Lower confidence for OR queries
+        expectedRowCount: this.totalDocuments
+      };
+    }
+
     const conditions = this.extractIndexableConditions(query);
     
     // Get cost estimates for different execution strategies
@@ -519,14 +534,58 @@ export class IndexManager {
         stats.nullCount += deltaCount;
       }
       
-      // Update index size if available
+      // Update unique values count and index size if available
       const index = this.indexes.get(field);
       if (index) {
-        stats.indexSize = index.getStats().totalEntries;
+        const indexStats = index.getStats();
+        stats.indexSize = indexStats.totalEntries;
+        stats.uniqueValues = indexStats.totalEntries; // Each entry in index represents a unique value
       }
     }
     
     this.fieldStats.set(field, stats);
+  }
+
+  // Check if query contains OR operations
+  private containsOrOperation(query: QueryInstance<any>): boolean {
+    try {
+      const hash = (query as any)._hash;
+      if (hash && Array.isArray(hash)) {
+        return this.hashContainsOr(hash);
+      }
+    } catch (error) {
+      // If we can't analyze the query, be conservative
+      return false;
+    }
+    return false;
+  }
+
+  // Recursively check if hash contains OR operations
+  private hashContainsOr(hash: any): boolean {
+    if (!Array.isArray(hash)) return false;
+
+    const [operator, ...args] = hash;
+
+    if (operator === 'or') {
+      return true;
+    }
+
+    // Recursively check arguments
+    for (const arg of args) {
+      if (Array.isArray(arg)) {
+        if (this.hashContainsOr(arg)) {
+          return true;
+        }
+      } else if (arg instanceof Set) {
+        for (const item of arg) {
+          if (Array.isArray(item) && this.hashContainsOr(item)) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
   }
 
   // Get all available indexes
