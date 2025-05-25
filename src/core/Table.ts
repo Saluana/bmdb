@@ -289,12 +289,21 @@ export class Table<T extends Record<string, any> = any> {
         return docId;
     }
 
-    // Insert multiple documents
+    // Insert multiple documents - optimized for bulk operations
     insertMultiple(documents: Array<T | Document>): number[] {
-        const docIds: number[] = [];
+        if (documents.length === 0) {
+            return [];
+        }
 
-        this._updateTable((table) => {
-            // Optimize: Calculate starting ID once for all documents
+        const docIds: number[] = [];
+        const documentsToIndex: Array<{
+            docId: number;
+            docData: Record<string, any>;
+        }> = [];
+
+        // Perform bulk insert in a single storage operation
+        this._performBulkInsert((table) => {
+            // Pre-calculate all IDs to avoid repeated table lookups
             let nextId = this._getNextIdFromTable(table);
 
             for (const document of documents) {
@@ -303,6 +312,7 @@ export class Table<T extends Record<string, any> = any> {
                 }
 
                 let docId: number;
+                let docData: Record<string, any>;
 
                 if (document instanceof Document) {
                     if (String(document.docId) in table) {
@@ -311,24 +321,21 @@ export class Table<T extends Record<string, any> = any> {
                         );
                     }
                     docId = document.docId;
-                    docIds.push(docId);
-                    table[String(docId)] = document.toJSON();
+                    docData = document.toJSON();
                 } else {
                     // Use pre-calculated sequential ID and increment for next document
                     docId = nextId++;
-                    docIds.push(docId);
-                    table[String(docId)] = { ...document };
+                    docData = { ...document };
                 }
+
+                docIds.push(docId);
+                table[String(docId)] = docData;
+                documentsToIndex.push({ docId, docData });
             }
         });
 
-        // Update indexes for all inserted documents
-        for (let i = 0; i < documents.length; i++) {
-            const document = documents[i];
-            const docId = docIds[i];
-            const docData = document instanceof Document ? document.toJSON() : { ...document };
-            this._indexManager.addDocument(docId, docData);
-        }
+        // Batch update indexes after all inserts are complete
+        this._indexManager.addDocumentsBatch(documentsToIndex);
 
         return docIds;
     }
@@ -1466,6 +1473,25 @@ export class Table<T extends Record<string, any> = any> {
 
         tables[this._name] = table;
         this._storage.write(tables);
+    }
+
+    private _performBulkInsert(
+        updater: (table: Record<string, Record<string, any>>) => void
+    ): void {
+        // For bulk operations, bypass the expensive delta system and do direct writes
+        const tables = this._storage.read() || {};
+        const table =
+            (tables[this._name] as Record<string, Record<string, any>>) || {};
+
+        // Apply all changes at once
+        updater(table);
+
+        // Single atomic write operation
+        tables[this._name] = table;
+        this._storage.write(tables);
+
+        // Clear cache once after all operations
+        this._selectiveClearCache();
     }
 
     private _getCacheKey(cond: QueryLike<T>): string | null {
