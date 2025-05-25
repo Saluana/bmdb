@@ -47,9 +47,17 @@ export class BTreeNode {
         view.setUint8(offset++, this.isLeaf ? 1 : 0);
         view.setUint16(offset, this.keys.length, false);
         offset += 2;
-        view.setUint32(offset, this.parentOffset === -1 ? 0xffffffff : this.parentOffset, false);
+        view.setUint32(
+            offset,
+            this.parentOffset === -1 ? 0xffffffff : this.parentOffset,
+            false
+        );
         offset += 4;
-        view.setUint32(offset, this.nextLeafOffset === -1 ? 0xffffffff : this.nextLeafOffset, false);
+        view.setUint32(
+            offset,
+            this.nextLeafOffset === -1 ? 0xffffffff : this.nextLeafOffset,
+            false
+        );
         offset += 4;
 
         // Keys and entries/children
@@ -60,7 +68,11 @@ export class BTreeNode {
             // Check bounds before writing
             const requiredSpace = 2 + keyBytes.length + (this.isLeaf ? 8 : 4);
             if (offset + requiredSpace > BTreeNode.NODE_SIZE) {
-                throw new Error(`Node serialization would exceed NODE_SIZE: required ${offset + requiredSpace}, max ${BTreeNode.NODE_SIZE}`);
+                throw new Error(
+                    `Node serialization would exceed NODE_SIZE: required ${
+                        offset + requiredSpace
+                    }, max ${BTreeNode.NODE_SIZE}`
+                );
             }
 
             // Key length and key data
@@ -78,7 +90,8 @@ export class BTreeNode {
                 offset += 4;
             } else {
                 // Child offset
-                const childOffset = this.children[i] === -1 ? 0xffffffff : this.children[i];
+                const childOffset =
+                    this.children[i] === -1 ? 0xffffffff : this.children[i];
                 view.setUint32(offset, childOffset, false);
                 offset += 4;
             }
@@ -88,14 +101,27 @@ export class BTreeNode {
         if (!this.isLeaf) {
             // Validate B-tree invariant before serialization
             if (this.children.length !== this.keys.length + 1) {
-                throw new Error(`B-tree invariant violation during serialization: internal node has ${this.children.length} children but ${this.keys.length} keys (expected ${this.keys.length + 1} children)`);
+                throw new Error(
+                    `B-tree invariant violation during serialization: internal node has ${
+                        this.children.length
+                    } children but ${this.keys.length} keys (expected ${
+                        this.keys.length + 1
+                    } children)`
+                );
             }
-            
+
             if (this.children.length > this.keys.length) {
                 if (offset + 4 > BTreeNode.NODE_SIZE) {
-                    throw new Error(`Node serialization would exceed NODE_SIZE for last child: required ${offset + 4}, max ${BTreeNode.NODE_SIZE}`);
+                    throw new Error(
+                        `Node serialization would exceed NODE_SIZE for last child: required ${
+                            offset + 4
+                        }, max ${BTreeNode.NODE_SIZE}`
+                    );
                 }
-                const lastChildOffset = this.children[this.children.length - 1] === -1 ? 0xffffffff : this.children[this.children.length - 1];
+                const lastChildOffset =
+                    this.children[this.children.length - 1] === -1
+                        ? 0xffffffff
+                        : this.children[this.children.length - 1];
                 view.setUint32(offset, lastChildOffset, false);
             }
         }
@@ -114,7 +140,9 @@ export class BTreeNode {
 
         // Check minimum header size
         if (data.length < 11) {
-            throw new Error(`Node data too small: ${data.length} bytes, expected at least 11`);
+            throw new Error(
+                `Node data too small: ${data.length} bytes, expected at least 11`
+            );
         }
 
         const isLeaf = view.getUint8(offset++) === 1;
@@ -127,7 +155,9 @@ export class BTreeNode {
 
         // Validate keyCount
         if (keyCount < 0 || keyCount > BTreeNode.MAX_KEYS) {
-            throw new Error(`Invalid keyCount: ${keyCount}, max allowed: ${BTreeNode.MAX_KEYS}`);
+            throw new Error(
+                `Invalid keyCount: ${keyCount}, max allowed: ${BTreeNode.MAX_KEYS}`
+            );
         }
 
         const node = new BTreeNode(isLeaf);
@@ -140,9 +170,11 @@ export class BTreeNode {
         for (let i = 0; i < keyCount; i++) {
             // Check bounds for key length
             if (offset + 2 > data.length) {
-                throw new Error(`Out of bounds reading key length at offset ${offset}, data length: ${data.length}`);
+                throw new Error(
+                    `Out of bounds reading key length at offset ${offset}, data length: ${data.length}`
+                );
             }
-            
+
             const keyLength = view.getUint16(offset, false);
             offset += 2;
 
@@ -153,7 +185,9 @@ export class BTreeNode {
 
             // Check bounds for key data
             if (offset + keyLength > data.length) {
-                throw new Error(`Out of bounds reading key data at offset ${offset}, key length: ${keyLength}, data length: ${data.length}`);
+                throw new Error(
+                    `Out of bounds reading key data at offset ${offset}, key length: ${keyLength}, data length: ${data.length}`
+                );
             }
 
             const keyBytes = data.slice(offset, offset + keyLength);
@@ -165,7 +199,9 @@ export class BTreeNode {
             if (isLeaf) {
                 // Check bounds for entry data
                 if (offset + 8 > data.length) {
-                    throw new Error(`Out of bounds reading entry data at offset ${offset}, data length: ${data.length}`);
+                    throw new Error(
+                        `Out of bounds reading entry data at offset ${offset}, data length: ${data.length}`
+                    );
                 }
 
                 const entryOffset = view.getUint32(offset, false);
@@ -181,7 +217,9 @@ export class BTreeNode {
             } else {
                 // Check bounds for child offset
                 if (offset + 4 > data.length) {
-                    throw new Error(`Out of bounds reading child offset at offset ${offset}, data length: ${data.length}`);
+                    throw new Error(
+                        `Out of bounds reading child offset at offset ${offset}, data length: ${data.length}`
+                    );
                 }
 
                 const rawChildOffset = view.getUint32(offset, false);
@@ -195,7 +233,10 @@ export class BTreeNode {
         // Last child for internal nodes (ensure proper B-tree invariant)
         if (!isLeaf) {
             // For internal nodes, we need exactly keyCount + 1 children
-            if (node.children.length === keyCount && offset + 4 <= data.length) {
+            if (
+                node.children.length === keyCount &&
+                offset + 4 <= data.length
+            ) {
                 const rawLastChild = view.getUint32(offset, false);
                 if (rawLastChild !== 0) {
                     node.children.push(
@@ -203,15 +244,23 @@ export class BTreeNode {
                     );
                 }
             }
-            
+
             // Ensure B-tree invariant: internal nodes must have keyCount + 1 children
             if (node.children.length !== node.keys.length + 1) {
-                throw new Error(`B-tree invariant violation during deserialization: internal node at offset ${nodeOffset} has ${node.children.length} children but ${node.keys.length} keys (expected ${node.keys.length + 1} children)`);
+                throw new Error(
+                    `B-tree invariant violation during deserialization: internal node at offset ${nodeOffset} has ${
+                        node.children.length
+                    } children but ${node.keys.length} keys (expected ${
+                        node.keys.length + 1
+                    } children)`
+                );
             }
         } else {
             // For leaf nodes, ensure we have matching keys and entries
             if (node.entries.length !== node.keys.length) {
-                throw new Error(`B-tree invariant violation during deserialization: leaf node at offset ${nodeOffset} has ${node.entries.length} entries but ${node.keys.length} keys`);
+                throw new Error(
+                    `B-tree invariant violation during deserialization: leaf node at offset ${nodeOffset} has ${node.entries.length} entries but ${node.keys.length} keys`
+                );
             }
         }
 
@@ -450,7 +499,10 @@ export class BTree {
         const leafFillFactor = Math.floor(BTreeNode.MAX_KEYS * 0.7);
 
         for (let i = 0; i < sortedEntries.length; i++) {
-            if (currentLeaf.keys.length >= leafFillFactor && i < sortedEntries.length - 1) {
+            if (
+                currentLeaf.keys.length >= leafFillFactor &&
+                i < sortedEntries.length - 1
+            ) {
                 // Current leaf is sufficiently full, create new one
                 const newLeaf = new BTreeNode(true);
                 leafNodes.push(newLeaf);
@@ -459,9 +511,13 @@ export class BTree {
             currentLeaf.insertEntry(sortedEntries[i]);
         }
 
-        // Assign offsets and save leaf nodes with proper linking
+        // First assign offsets to all leaf nodes
         for (let i = 0; i < leafNodes.length; i++) {
             leafNodes[i].offset = this.allocateNodeOffset();
+        }
+
+        // Then set up the nextLeafOffset links and save
+        for (let i = 0; i < leafNodes.length; i++) {
             if (i < leafNodes.length - 1) {
                 leafNodes[i].nextLeafOffset = leafNodes[i + 1].offset;
             } else {
@@ -484,7 +540,10 @@ export class BTree {
             for (let i = 0; i < currentLevel.length; i++) {
                 const child = currentLevel[i];
 
-                if (currentInternal.children.length > internalFillFactor && i < currentLevel.length - 1) {
+                if (
+                    currentInternal.children.length > internalFillFactor &&
+                    i < currentLevel.length - 1
+                ) {
                     // Current internal node is sufficiently full, create new one
                     const newInternal = new BTreeNode(false);
                     nextLevel.push(newInternal);
@@ -505,7 +564,11 @@ export class BTree {
 
                 // Validate internal node structure before saving
                 if (internal.children.length !== internal.keys.length + 1) {
-                    throw new Error(`Internal node invariant violation during bulkLoad: children.length (${internal.children.length}) != keys.length + 1 (${internal.keys.length + 1})`);
+                    throw new Error(
+                        `Internal node invariant violation during bulkLoad: children.length (${
+                            internal.children.length
+                        }) != keys.length + 1 (${internal.keys.length + 1})`
+                    );
                 }
 
                 // Update children's parent pointers
@@ -572,7 +635,9 @@ export class BTree {
         while (node) {
             entries.push(...node.entries);
 
-            if (node.nextLeafOffset === -1) break;
+            if (node.nextLeafOffset === -1) {
+                break;
+            }
             node = this.loadNode(node.nextLeafOffset);
         }
 
@@ -613,38 +678,8 @@ export class BTree {
                         path,
                     });
                 }
-                // Always log the state before moving to the next child
-                console.error('[BTree.findLeafNode] Traversing:', {
-                    nodeOffset: node.offset,
-                    keys: node.keys,
-                    children: node.children,
-                    childIndex,
-                    nextOffset: node.children[childIndex],
-                    key,
-                    path,
-                });
                 currentOffset = node.children[childIndex] || -1;
             }
-        }
-        // Log path and last node for debugging
-        console.error('Failed to find leaf node. Traversal path:', path);
-        if (path.length > 0) {
-            const lastNode = this.loadNode(path[path.length - 1]);
-            const lastNodeState = {
-                keys: lastNode.keys,
-                children: lastNode.children,
-                isLeaf: lastNode.isLeaf,
-                offset: lastNode.offset,
-            };
-            console.error('Last node:', lastNodeState);
-            // Force output to stderr in case console.error is suppressed
-            try {
-                process.stderr.write(
-                    '[BTree.findLeafNode] FINAL ERROR\n' +
-                        JSON.stringify({ path, lastNode: lastNodeState }) +
-                        '\n'
-                );
-            } catch (e) {}
         }
         throw new Error('Failed to find leaf node');
     }
@@ -1055,7 +1090,9 @@ export class BTree {
         if (offset < this.nextNodeOffset && offset >= 32) {
             // Check if offset is aligned to NODE_SIZE
             if (offset % BTreeNode.NODE_SIZE !== 0) {
-                throw new Error(`Node offset ${offset} is not aligned to ${BTreeNode.NODE_SIZE} bytes`);
+                throw new Error(
+                    `Node offset ${offset} is not aligned to ${BTreeNode.NODE_SIZE} bytes`
+                );
             }
             try {
                 const data = this.readNode(offset);
@@ -1067,20 +1104,35 @@ export class BTree {
                 this.evictCacheIfNeeded();
 
                 this.nodeCache.set(offset, node);
-                this.nodeCacheAccessOrder.set(offset, ++this.cacheAccessCounter);
+                this.nodeCacheAccessOrder.set(
+                    offset,
+                    ++this.cacheAccessCounter
+                );
 
                 return node;
             } catch (error) {
                 // Log detailed error for debugging
-                console.error(`[BTree.loadNode] Failed to load node at offset ${offset}:`, {
-                    offset,
-                    nextNodeOffset: this.nextNodeOffset,
-                    error: error instanceof Error ? error.message : String(error)
-                });
-                throw new Error(`Failed to load node at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+                console.error(
+                    `[BTree.loadNode] Failed to load node at offset ${offset}:`,
+                    {
+                        offset,
+                        nextNodeOffset: this.nextNodeOffset,
+                        error:
+                            error instanceof Error
+                                ? error.message
+                                : String(error),
+                    }
+                );
+                throw new Error(
+                    `Failed to load node at offset ${offset}: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
             }
         } else {
-            throw new Error(`Invalid node offset: ${offset}, valid range: [32, ${this.nextNodeOffset}], must be aligned to ${BTreeNode.NODE_SIZE} bytes`);
+            throw new Error(
+                `Invalid node offset: ${offset}, valid range: [32, ${this.nextNodeOffset}], must be aligned to ${BTreeNode.NODE_SIZE} bytes`
+            );
         }
     }
 
@@ -1105,7 +1157,9 @@ export class BTree {
             const offset = this.freeNodeOffsets.pop()!;
             // Ensure the offset is properly aligned
             if (offset % BTreeNode.NODE_SIZE !== 0) {
-                console.warn(`Skipping misaligned free offset ${offset}, expected alignment to ${BTreeNode.NODE_SIZE}`);
+                console.warn(
+                    `Skipping misaligned free offset ${offset}, expected alignment to ${BTreeNode.NODE_SIZE}`
+                );
                 return this.allocateNodeOffset(); // Recursively try next offset
             }
             return offset;
@@ -1114,7 +1168,7 @@ export class BTree {
         // Ensure nextNodeOffset is properly aligned
         const remainder = this.nextNodeOffset % BTreeNode.NODE_SIZE;
         if (remainder !== 0) {
-            this.nextNodeOffset += (BTreeNode.NODE_SIZE - remainder);
+            this.nextNodeOffset += BTreeNode.NODE_SIZE - remainder;
         }
 
         const offset = this.nextNodeOffset;

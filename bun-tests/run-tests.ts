@@ -12,9 +12,11 @@ const testFiles = [
     'schema.test.ts',
     'indexing.test.ts',
     'integration.test.ts',
+    'operations.test.ts',
     'util/LRUCache.test.ts',
     'util/messagePackUtil.test.ts',
     'util/objectPool.test.ts',
+    'util/BTree.test.ts',
 ];
 
 interface TestResult {
