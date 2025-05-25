@@ -12,6 +12,8 @@ const testFiles = [
     'schema.test.ts',
     'indexing.test.ts',
     'integration.test.ts',
+    'util/LRUCache.test.ts',
+    'util/messagePackUtil.test.ts',
 ];
 
 interface TestResult {
