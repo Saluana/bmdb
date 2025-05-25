@@ -71,20 +71,23 @@ export class BinaryStorage implements Storage {
     private mmapChunks: Map<number, MemoryMappedChunk> = new Map();
     private maxCacheSize: number = 16; // Maximum number of cached chunks
     private mmapEnabled: boolean = true;
-    
+
     // Write batching system
     private pendingWrites: PendingWrite[] = [];
     private batchTimer: NodeJS.Timeout | null = null;
     private batchSizeLimit: number = 10; // Batch up to 10 writes
     private batchTimeLimit: number = 10; // Flush after 10ms
 
-    constructor(path: string = 'db.bmdb', options: { 
-        maxCacheSize?: number; 
-        mmapEnabled?: boolean;
-        chunkSize?: number;
-        batchSize?: number;
-        batchTimeMs?: number;
-    } = {}) {
+    constructor(
+        path: string = 'db.bmdb',
+        options: {
+            maxCacheSize?: number;
+            mmapEnabled?: boolean;
+            chunkSize?: number;
+            batchSize?: number;
+            batchTimeMs?: number;
+        } = {}
+    ) {
         this.path = path;
         this.maxCacheSize = options.maxCacheSize ?? 16;
         this.mmapEnabled = options.mmapEnabled ?? true;
@@ -119,10 +122,10 @@ export class BinaryStorage implements Storage {
         process.on('uncaughtException', cleanup);
         process.on('unhandledRejection', cleanup);
     }
-    
+
     private scheduleBatchWrite(offset: number, data: Buffer): void {
         this.pendingWrites.push({ offset, data, length: data.length });
-        
+
         if (this.pendingWrites.length >= this.batchSizeLimit) {
             this.flushBatchWrites();
         } else if (!this.batchTimer) {
@@ -131,23 +134,31 @@ export class BinaryStorage implements Storage {
             }, this.batchTimeLimit);
         }
     }
-    
+
     private flushBatchWrites(): void {
         if (this.pendingWrites.length === 0) return;
-        
+
         if (this.batchTimer) {
             clearTimeout(this.batchTimer);
             this.batchTimer = null;
         }
-        
+
         // Sort writes by offset for better I/O performance
         this.pendingWrites.sort((a, b) => a.offset - b.offset);
-        
+
         try {
             for (const write of this.pendingWrites) {
-                const bytesWritten = writeSync(this.fd, write.data, 0, write.length, write.offset);
+                const bytesWritten = writeSync(
+                    this.fd,
+                    write.data,
+                    0,
+                    write.length,
+                    write.offset
+                );
                 if (bytesWritten !== write.length) {
-                    throw new Error(`Expected to write ${write.length} bytes, but wrote ${bytesWritten}`);
+                    throw new Error(
+                        `Expected to write ${write.length} bytes, but wrote ${bytesWritten}`
+                    );
                 }
             }
         } finally {
@@ -159,6 +170,9 @@ export class BinaryStorage implements Storage {
         if (this.fd === -1) return null;
 
         try {
+            // Flush any pending writes before reading
+            this.flushBatchWrites();
+
             // Get all entries from B-tree
             const entries = this.btree.getAllEntries();
             if (entries.length === 0) return null;
@@ -213,6 +227,9 @@ export class BinaryStorage implements Storage {
                 }
             }
 
+            // Flush any pending batch writes to ensure data is written to disk
+            this.flushBatchWrites();
+
             // Update header
             this.writeHeader();
         } catch (error) {
@@ -224,21 +241,24 @@ export class BinaryStorage implements Storage {
     close(): void {
         // Flush any pending batch writes first
         this.flushBatchWrites();
-        
+
         // Flush all dirty memory-mapped chunks
         this.flushAllChunks();
-        
+
         // Clear memory-mapped chunks cache
         this.mmapChunks.clear();
-        
+
         if (this.fd !== -1) {
             const fdToClose = this.fd;
             this.fd = -1; // Mark as closed immediately to prevent double-close
-            
+
             try {
                 closeSync(fdToClose);
             } catch (error) {
-                console.error(`Error closing file ${this.path} (fd: ${fdToClose}):`, error);
+                console.error(
+                    `Error closing file ${this.path} (fd: ${fdToClose}):`,
+                    error
+                );
                 // Don't re-throw during cleanup as it could prevent other cleanup
             }
         }
@@ -303,7 +323,11 @@ export class BinaryStorage implements Storage {
                 this.fd = openSync(this.path, 'r+');
                 this.fileSize = fstatSync(this.fd).size;
             } catch (error) {
-                throw new Error(`Failed to open existing file '${this.path}': ${error instanceof Error ? error.message : String(error)}`);
+                throw new Error(
+                    `Failed to open existing file '${this.path}': ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
             }
 
             if (this.fileSize >= HEADER_SIZE) {
@@ -333,7 +357,11 @@ export class BinaryStorage implements Storage {
                 this.fd = openSync(this.path, 'w+');
                 this.createNewFile();
             } catch (error) {
-                throw new Error(`Failed to create new file '${this.path}': ${error instanceof Error ? error.message : String(error)}`);
+                throw new Error(
+                    `Failed to create new file '${this.path}': ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
             }
         }
     }
@@ -363,10 +391,16 @@ export class BinaryStorage implements Storage {
         try {
             const bytesRead = readSync(this.fd, buffer, 0, HEADER_SIZE, 0);
             if (bytesRead !== HEADER_SIZE) {
-                throw new Error(`Expected to read ${HEADER_SIZE} bytes for header, but got ${bytesRead}`);
+                throw new Error(
+                    `Expected to read ${HEADER_SIZE} bytes for header, but got ${bytesRead}`
+                );
             }
         } catch (error) {
-            throw new Error(`Failed to read file header: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(
+                `Failed to read file header: ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
 
         const view = new DataView(
@@ -407,10 +441,16 @@ export class BinaryStorage implements Storage {
         try {
             const bytesWritten = writeSync(this.fd, buffer, 0, HEADER_SIZE, 0);
             if (bytesWritten !== HEADER_SIZE) {
-                throw new Error(`Expected to write ${HEADER_SIZE} bytes for header, but wrote ${bytesWritten}`);
+                throw new Error(
+                    `Expected to write ${HEADER_SIZE} bytes for header, but wrote ${bytesWritten}`
+                );
             }
         } catch (error) {
-            throw new Error(`Failed to write file header: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(
+                `Failed to write file header: ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
     }
 
@@ -422,10 +462,16 @@ export class BinaryStorage implements Storage {
             try {
                 const bytesRead = readSync(this.fd, buffer, 0, 1024, offset);
                 if (bytesRead !== 1024) {
-                    throw new Error(`Expected to read 1024 bytes, but got ${bytesRead}`);
+                    throw new Error(
+                        `Expected to read 1024 bytes, but got ${bytesRead}`
+                    );
                 }
             } catch (error) {
-                throw new Error(`Failed to read node from file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+                throw new Error(
+                    `Failed to read node from file at offset ${offset}: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
             }
             return new Uint8Array(buffer);
         }
@@ -434,7 +480,7 @@ export class BinaryStorage implements Storage {
     private writeNodeToFile(offset: number, data: Uint8Array): void {
         if (this.mmapEnabled) {
             this.writeToMappedChunk(offset, data);
-            
+
             // Update next node offset if this is a new node
             if (offset >= this.header.nextNodeOffset) {
                 this.header.nextNodeOffset = offset + 1024;
@@ -446,17 +492,33 @@ export class BinaryStorage implements Storage {
                 if (requiredSize > this.fileSize) {
                     // Extend file size
                     const padding = Buffer.alloc(requiredSize - this.fileSize);
-                    const paddingWritten = writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+                    const paddingWritten = writeSync(
+                        this.fd,
+                        padding,
+                        0,
+                        padding.length,
+                        this.fileSize
+                    );
                     if (paddingWritten !== padding.length) {
-                        throw new Error(`Failed to extend file: expected to write ${padding.length} bytes, but wrote ${paddingWritten}`);
+                        throw new Error(
+                            `Failed to extend file: expected to write ${padding.length} bytes, but wrote ${paddingWritten}`
+                        );
                     }
                     this.fileSize = requiredSize;
                 }
 
                 const buffer = Buffer.from(data);
-                const bytesWritten = writeSync(this.fd, buffer, 0, data.length, offset);
+                const bytesWritten = writeSync(
+                    this.fd,
+                    buffer,
+                    0,
+                    data.length,
+                    offset
+                );
                 if (bytesWritten !== data.length) {
-                    throw new Error(`Expected to write ${data.length} bytes, but wrote ${bytesWritten}`);
+                    throw new Error(
+                        `Expected to write ${data.length} bytes, but wrote ${bytesWritten}`
+                    );
                 }
 
                 // Update next node offset if this is a new node
@@ -464,7 +526,11 @@ export class BinaryStorage implements Storage {
                     this.header.nextNodeOffset = offset + 1024;
                 }
             } catch (error) {
-                throw new Error(`Failed to write node to file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+                throw new Error(
+                    `Failed to write node to file at offset ${offset}: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
             }
         }
     }
@@ -500,13 +566,25 @@ export class BinaryStorage implements Storage {
         if (requiredSize > this.fileSize) {
             try {
                 const padding = Buffer.alloc(requiredSize - this.fileSize);
-                const bytesWritten = writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+                const bytesWritten = writeSync(
+                    this.fd,
+                    padding,
+                    0,
+                    padding.length,
+                    this.fileSize
+                );
                 if (bytesWritten !== padding.length) {
-                    throw new Error(`Failed to extend file: expected to write ${padding.length} bytes, but wrote ${bytesWritten}`);
+                    throw new Error(
+                        `Failed to extend file: expected to write ${padding.length} bytes, but wrote ${bytesWritten}`
+                    );
                 }
                 this.fileSize = requiredSize;
             } catch (error) {
-                throw new Error(`Failed to allocate document space: ${error instanceof Error ? error.message : String(error)}`);
+                throw new Error(
+                    `Failed to allocate document space: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
             }
         }
 
@@ -557,11 +635,13 @@ export class BinaryStorage implements Storage {
         const btreeNodes = Math.floor(
             (this.header.nextNodeOffset - HEADER_SIZE) / 1024
         );
-        
+
         // Calculate wasted space (gaps between used areas)
-        const usedDocumentSpace = this.header.freeSpaceOffset - (HEADER_SIZE + this.header.reserved1);
+        const usedDocumentSpace =
+            this.header.freeSpaceOffset - (HEADER_SIZE + this.header.reserved1);
         const wastedSpace = this.fileSize - this.header.freeSpaceOffset;
-        const fragmentationRatio = this.fileSize > 0 ? wastedSpace / this.fileSize : 0;
+        const fragmentationRatio =
+            this.fileSize > 0 ? wastedSpace / this.fileSize : 0;
 
         return {
             fileSize: this.fileSize,
@@ -588,7 +668,11 @@ export class BinaryStorage implements Storage {
                 copyFileSync(this.path, backupPath);
                 backupCreated = true;
             } catch (error) {
-                throw new Error(`Failed to create backup: ${error instanceof Error ? error.message : String(error)}`);
+                throw new Error(
+                    `Failed to create backup: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
             }
 
             // 2. Read all existing documents
@@ -604,20 +688,31 @@ export class BinaryStorage implements Storage {
             }
 
             // 2. Read document data for all entries
-            const documentData = new Map<string, { data: any; entry: BTreeEntry }>();
-            
+            const documentData = new Map<
+                string,
+                { data: any; entry: BTreeEntry }
+            >();
+
             for (const entry of allEntries) {
                 try {
-                    const data = this.readDocumentData(entry.offset, entry.length);
+                    const data = this.readDocumentData(
+                        entry.offset,
+                        entry.length
+                    );
                     documentData.set(entry.key, { data, entry });
                 } catch (error) {
-                    console.warn(`Failed to read document with key ${entry.key}, skipping:`, error instanceof Error ? error.message : String(error));
+                    console.warn(
+                        `Failed to read document with key ${entry.key}, skipping:`,
+                        error instanceof Error ? error.message : String(error)
+                    );
                     // Skip corrupted documents during compaction
                 }
             }
 
             // 3. Calculate B-tree area size needed
-            const btreeAreaSize = this.calculateRequiredBTreeSpace(documentData.size);
+            const btreeAreaSize = this.calculateRequiredBTreeSpace(
+                documentData.size
+            );
             const documentAreaStart = HEADER_SIZE + btreeAreaSize;
 
             // 4. Create new B-tree for rebuilt file
@@ -638,29 +733,43 @@ export class BinaryStorage implements Storage {
             const newEntries: BTreeEntry[] = [];
 
             // Sort entries by key for consistent layout
-            const sortedEntries = Array.from(documentData.entries()).sort(([a], [b]) => a.localeCompare(b));
+            const sortedEntries = Array.from(documentData.entries()).sort(
+                ([a], [b]) => a.localeCompare(b)
+            );
 
             for (const [key, { data }] of sortedEntries) {
                 // Serialize document
                 const serializedData = MessagePackUtil.encode(data);
-                
+
                 // Ensure file is large enough
                 const requiredSize = currentOffset + serializedData.length;
                 if (requiredSize > this.fileSize) {
                     const padding = Buffer.alloc(requiredSize - this.fileSize);
-                    writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+                    writeSync(
+                        this.fd,
+                        padding,
+                        0,
+                        padding.length,
+                        this.fileSize
+                    );
                     this.fileSize = requiredSize;
                 }
 
                 // Write document data
                 const buffer = Buffer.from(serializedData);
-                writeSync(this.fd, buffer, 0, serializedData.length, currentOffset);
+                writeSync(
+                    this.fd,
+                    buffer,
+                    0,
+                    serializedData.length,
+                    currentOffset
+                );
 
                 // Create new entry
                 const newEntry: BTreeEntry = {
                     key,
                     offset: currentOffset,
-                    length: serializedData.length
+                    length: serializedData.length,
                 };
 
                 newEntries.push(newEntry);
@@ -696,27 +805,28 @@ export class BinaryStorage implements Storage {
                 unlinkSync(backupPath);
             }
 
-            console.log(`Compaction completed. File size reduced from ${this.fileSize} to ${currentOffset} bytes.`);
-
+            console.log(
+                `Compaction completed. File size reduced from ${this.fileSize} to ${currentOffset} bytes.`
+            );
         } catch (error) {
             console.error('Error during file compaction:', error);
-            
+
             // Rollback to backup if compaction failed
             if (backupCreated && existsSync(backupPath)) {
                 try {
                     // Close current file
                     closeSync(this.fd);
-                    
+
                     // Restore from backup
                     copyFileSync(backupPath, this.path);
-                    
+
                     // Reopen file
                     this.fd = openSync(this.path, 'r+');
                     this.fileSize = fstatSync(this.fd).size;
-                    
+
                     // Reload header
                     this.readHeader();
-                    
+
                     // Reinitialize B-tree
                     this.btree = new BTree(
                         (offset) => this.readNodeFromFile(offset),
@@ -726,18 +836,27 @@ export class BinaryStorage implements Storage {
                         this.btree.setRootOffset(this.header.rootNodeOffset);
                     }
                     this.btree.setNextNodeOffset(this.header.nextNodeOffset);
-                    
+
                     // Clean up backup
                     unlinkSync(backupPath);
-                    
-                    console.log('Successfully rolled back to backup after compaction failure.');
+
+                    console.log(
+                        'Successfully rolled back to backup after compaction failure.'
+                    );
                 } catch (rollbackError) {
-                    console.error('Failed to rollback after compaction error:', rollbackError);
+                    console.error(
+                        'Failed to rollback after compaction error:',
+                        rollbackError
+                    );
                     // Leave backup file for manual recovery
                 }
             }
-            
-            throw new Error(`File compaction failed: ${error instanceof Error ? error.message : String(error)}`);
+
+            throw new Error(
+                `File compaction failed: ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
     }
 
@@ -766,32 +885,32 @@ export class BinaryStorage implements Storage {
         // Estimate B-tree space needed based on document count
         // Each B-tree node can hold up to 15 entries
         // We need roughly log_16(documentCount) levels
-        
+
         if (documentCount === 0) {
             return 1024 * 1024; // 1MB minimum
         }
 
         const entriesPerNode = 15;
         const nodeSize = 1024;
-        
+
         // Calculate number of leaf nodes needed
         const leafNodes = Math.ceil(documentCount / entriesPerNode);
-        
+
         // Calculate internal nodes (rough estimate for a balanced tree)
         let internalNodes = 0;
         let currentLevel = leafNodes;
-        
+
         while (currentLevel > 1) {
             currentLevel = Math.ceil(currentLevel / (entriesPerNode + 1));
             internalNodes += currentLevel;
         }
-        
+
         const totalNodes = leafNodes + internalNodes;
         const requiredSpace = totalNodes * nodeSize;
-        
+
         // Add 50% buffer for growth and ensure minimum size
         const bufferedSpace = Math.max(requiredSpace * 1.5, 1024 * 1024);
-        
+
         return Math.ceil(bufferedSpace);
     }
 
@@ -806,14 +925,24 @@ export class BinaryStorage implements Storage {
     }
 
     // Index management (stub implementations for interface compliance)
-    async createIndex(tableName: string, field: string, options?: { unique?: boolean }): Promise<void> {
+    async createIndex(
+        tableName: string,
+        field: string,
+        options?: { unique?: boolean }
+    ): Promise<void> {
         // TODO: Implement B-tree based indexing for binary storage
         console.warn('BinaryStorage: createIndex not fully implemented');
     }
 
-    async createCompoundIndex(tableName: string, fields: string[], options?: { unique?: boolean; name?: string }): Promise<void> {
+    async createCompoundIndex(
+        tableName: string,
+        fields: string[],
+        options?: { unique?: boolean; name?: string }
+    ): Promise<void> {
         // TODO: Implement compound indexing for binary storage
-        console.warn('BinaryStorage: createCompoundIndex not fully implemented');
+        console.warn(
+            'BinaryStorage: createCompoundIndex not fully implemented'
+        );
     }
 
     async dropIndex(tableName: string, indexName: string): Promise<void> {
@@ -821,12 +950,19 @@ export class BinaryStorage implements Storage {
         console.warn('BinaryStorage: dropIndex not fully implemented');
     }
 
-    async listIndexes(tableName?: string): Promise<import('./Storage').IndexDefinition[]> {
+    async listIndexes(
+        tableName?: string
+    ): Promise<import('./Storage').IndexDefinition[]> {
         // TODO: Implement index listing for binary storage
         return [];
     }
 
-    async checkUnique(tableName: string, field: string, value: any, excludeDocId?: string): Promise<boolean> {
+    async checkUnique(
+        tableName: string,
+        field: string,
+        value: any,
+        excludeDocId?: string
+    ): Promise<boolean> {
         // For now, fall back to linear scan
         const data = this.read();
         const table = data?.[tableName];
@@ -834,14 +970,23 @@ export class BinaryStorage implements Storage {
 
         for (const [docId, doc] of Object.entries(table)) {
             if (excludeDocId && docId === excludeDocId) continue;
-            if (typeof doc === 'object' && doc !== null && (doc as any)[field] === value) {
+            if (
+                typeof doc === 'object' &&
+                doc !== null &&
+                (doc as any)[field] === value
+            ) {
                 return false;
             }
         }
         return true;
     }
 
-    async checkCompoundUnique(tableName: string, fields: string[], values: any[], excludeDocId?: string): Promise<boolean> {
+    async checkCompoundUnique(
+        tableName: string,
+        fields: string[],
+        values: any[],
+        excludeDocId?: string
+    ): Promise<boolean> {
         // For now, fall back to linear scan
         const data = this.read();
         const table = data?.[tableName];
@@ -850,7 +995,7 @@ export class BinaryStorage implements Storage {
         for (const [docId, doc] of Object.entries(table)) {
             if (excludeDocId && docId === excludeDocId) continue;
             if (typeof doc === 'object' && doc !== null) {
-                const docValues = fields.map(field => (doc as any)[field]);
+                const docValues = fields.map((field) => (doc as any)[field]);
                 if (JSON.stringify(docValues) === JSON.stringify(values)) {
                     return false;
                 }
@@ -876,7 +1021,15 @@ export class BinaryStorage implements Storage {
         throw new Error('Vector operations not supported by this storage type');
     }
 
-    supportsFeature(feature: 'compoundIndex' | 'batch' | 'tx' | 'async' | 'fileLocking' | 'vectorSearch'): boolean {
+    supportsFeature(
+        feature:
+            | 'compoundIndex'
+            | 'batch'
+            | 'tx'
+            | 'async'
+            | 'fileLocking'
+            | 'vectorSearch'
+    ): boolean {
         if (feature === 'vectorSearch') return false;
         return ['async'].includes(feature);
     }
@@ -893,18 +1046,18 @@ export class BinaryStorage implements Storage {
 
     private getMappedChunk(chunkKey: number): MemoryMappedChunk {
         let chunk = this.mmapChunks.get(chunkKey);
-        
+
         if (!chunk) {
             // Evict LRU chunk if cache is full
             if (this.mmapChunks.size >= this.maxCacheSize) {
                 this.evictLRUChunk();
             }
-            
+
             // Create new chunk
             chunk = this.loadChunk(chunkKey);
             this.mmapChunks.set(chunkKey, chunk);
         }
-        
+
         chunk.lastAccessed = Date.now();
         return chunk;
     }
@@ -913,40 +1066,42 @@ export class BinaryStorage implements Storage {
         const offset = chunkKey * MMAP_CHUNK_SIZE;
         const maxSize = Math.min(MMAP_CHUNK_SIZE, this.fileSize - offset);
         const size = Math.max(0, maxSize);
-        
+
         const buffer = Buffer.alloc(MMAP_CHUNK_SIZE);
-        
+
         if (size > 0 && this.fd !== -1) {
             try {
                 const bytesRead = readSync(this.fd, buffer, 0, size, offset);
                 if (bytesRead !== size) {
-                    console.warn(`Expected to read ${size} bytes, but got ${bytesRead} for chunk ${chunkKey}`);
+                    console.warn(
+                        `Expected to read ${size} bytes, but got ${bytesRead} for chunk ${chunkKey}`
+                    );
                 }
             } catch (error) {
                 console.warn(`Failed to load chunk ${chunkKey}:`, error);
             }
         }
-        
+
         return {
             buffer,
             offset,
             size: MMAP_CHUNK_SIZE,
             dirty: false,
-            lastAccessed: Date.now()
+            lastAccessed: Date.now(),
         };
     }
 
     private evictLRUChunk(): void {
         let oldestTime = Date.now();
         let oldestKey = -1;
-        
+
         for (const [key, chunk] of this.mmapChunks) {
             if (chunk.lastAccessed < oldestTime) {
                 oldestTime = chunk.lastAccessed;
                 oldestKey = key;
             }
         }
-        
+
         if (oldestKey !== -1) {
             const chunk = this.mmapChunks.get(oldestKey);
             if (chunk && chunk.dirty) {
@@ -958,13 +1113,24 @@ export class BinaryStorage implements Storage {
 
     private flushChunk(chunkKey: number, chunk: MemoryMappedChunk): void {
         if (!chunk.dirty || this.fd === -1) return;
-        
+
         try {
-            const actualSize = Math.min(chunk.size, this.fileSize - chunk.offset);
+            const actualSize = Math.min(
+                chunk.size,
+                this.fileSize - chunk.offset
+            );
             if (actualSize > 0) {
-                const bytesWritten = writeSync(this.fd, chunk.buffer, 0, actualSize, chunk.offset);
+                const bytesWritten = writeSync(
+                    this.fd,
+                    chunk.buffer,
+                    0,
+                    actualSize,
+                    chunk.offset
+                );
                 if (bytesWritten !== actualSize) {
-                    console.warn(`Expected to write ${actualSize} bytes, but wrote ${bytesWritten} for chunk ${chunkKey}`);
+                    console.warn(
+                        `Expected to write ${actualSize} bytes, but wrote ${bytesWritten} for chunk ${chunkKey}`
+                    );
                 }
             }
             chunk.dirty = false;
@@ -986,24 +1152,32 @@ export class BinaryStorage implements Storage {
         if (length <= MMAP_CHUNK_SIZE) {
             const chunkKey = this.getChunkKey(offset);
             const chunkOffset = this.getChunkOffset(offset);
-            
+
             // Check if read spans multiple chunks
             if (chunkOffset + length <= MMAP_CHUNK_SIZE) {
                 // Single chunk read
                 const chunk = this.getMappedChunk(chunkKey);
-                return new Uint8Array(chunk.buffer.subarray(chunkOffset, chunkOffset + length));
+                return new Uint8Array(
+                    chunk.buffer.subarray(chunkOffset, chunkOffset + length)
+                );
             }
         }
-        
+
         // Multi-chunk read or large read - fallback to direct file access
         const buffer = Buffer.alloc(length);
         try {
             const bytesRead = readSync(this.fd, buffer, 0, length, offset);
             if (bytesRead !== length) {
-                throw new Error(`Expected to read ${length} bytes, but got ${bytesRead}`);
+                throw new Error(
+                    `Expected to read ${length} bytes, but got ${bytesRead}`
+                );
             }
         } catch (error) {
-            throw new Error(`Failed to read from file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(
+                `Failed to read from file at offset ${offset}: ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
         return new Uint8Array(buffer);
     }
@@ -1014,12 +1188,12 @@ export class BinaryStorage implements Storage {
         if (requiredSize > this.fileSize) {
             this.extendFile(requiredSize);
         }
-        
+
         // Handle cross-chunk writes
         if (data.length <= MMAP_CHUNK_SIZE) {
             const chunkKey = this.getChunkKey(offset);
             const chunkOffset = this.getChunkOffset(offset);
-            
+
             // Check if write spans multiple chunks
             if (chunkOffset + data.length <= MMAP_CHUNK_SIZE) {
                 // Single chunk write
@@ -1029,15 +1203,23 @@ export class BinaryStorage implements Storage {
                 return;
             }
         }
-        
+
         // Multi-chunk write or large write - fallback to direct file access
         try {
             const buffer = Buffer.from(data);
-            const bytesWritten = writeSync(this.fd, buffer, 0, data.length, offset);
+            const bytesWritten = writeSync(
+                this.fd,
+                buffer,
+                0,
+                data.length,
+                offset
+            );
             if (bytesWritten !== data.length) {
-                throw new Error(`Expected to write ${data.length} bytes, but wrote ${bytesWritten}`);
+                throw new Error(
+                    `Expected to write ${data.length} bytes, but wrote ${bytesWritten}`
+                );
             }
-            
+
             // Invalidate affected chunks
             const startChunk = this.getChunkKey(offset);
             const endChunk = this.getChunkKey(offset + data.length - 1);
@@ -1045,20 +1227,36 @@ export class BinaryStorage implements Storage {
                 this.mmapChunks.delete(chunkKey);
             }
         } catch (error) {
-            throw new Error(`Failed to write to file at offset ${offset}: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(
+                `Failed to write to file at offset ${offset}: ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
     }
 
     private extendFile(newSize: number): void {
         try {
             const padding = Buffer.alloc(newSize - this.fileSize);
-            const bytesWritten = writeSync(this.fd, padding, 0, padding.length, this.fileSize);
+            const bytesWritten = writeSync(
+                this.fd,
+                padding,
+                0,
+                padding.length,
+                this.fileSize
+            );
             if (bytesWritten !== padding.length) {
-                throw new Error(`Failed to extend file: expected to write ${padding.length} bytes, but wrote ${bytesWritten}`);
+                throw new Error(
+                    `Failed to extend file: expected to write ${padding.length} bytes, but wrote ${bytesWritten}`
+                );
             }
             this.fileSize = newSize;
         } catch (error) {
-            throw new Error(`Failed to extend file: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(
+                `Failed to extend file: ${
+                    error instanceof Error ? error.message : String(error)
+                }`
+            );
         }
     }
 
@@ -1070,14 +1268,16 @@ export class BinaryStorage implements Storage {
         memoryUsage: number;
     } {
         const totalChunks = this.mmapChunks.size;
-        const dirtyChunks = Array.from(this.mmapChunks.values()).filter(chunk => chunk.dirty).length;
+        const dirtyChunks = Array.from(this.mmapChunks.values()).filter(
+            (chunk) => chunk.dirty
+        ).length;
         const memoryUsage = totalChunks * MMAP_CHUNK_SIZE;
-        
+
         return {
             totalChunks,
             dirtyChunks,
             cacheHitRatio: 0, // Would need hit/miss tracking to implement
-            memoryUsage
+            memoryUsage,
         };
     }
 }
