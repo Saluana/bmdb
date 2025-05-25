@@ -590,10 +590,13 @@ export class Table<T extends Record<string, any> = any> {
     try {
       const plan = this._indexManager.analyzeQuery(query);
       
-      // Only use index if it's more selective than full scan (relaxed threshold)
-      if (!plan.useIndex || plan.estimatedSelectivity > 0.8) {
+      // Cost-based execution strategy decision
+      if (plan.executionStrategy === 'full_scan') {
         return null; // Fall back to full scan
       }
+      
+      // For hybrid strategy, we'll still use the index but verify results
+      // For index_scan strategy, we trust the index more
 
       const bitmap = this._indexManager.executeIndexQuery(plan);
       if (!bitmap || BitmapUtils.isEmpty(bitmap)) {
@@ -605,18 +608,20 @@ export class Table<T extends Record<string, any> = any> {
       const table = this._readTable();
       const results: Document[] = [];
 
-      // Check if we can skip verification for simple queries
-      const canSkipVerification = this._canSkipQueryVerification(query, plan);
+      // Decide verification strategy based on execution plan
+      const skipVerification = plan.executionStrategy === 'index_scan' && 
+                              this._canSkipQueryVerification(query, plan);
+      const useHybridVerification = plan.executionStrategy === 'hybrid';
 
       for (const docId of docIds) {
         const doc = table[String(docId)];
         if (doc) {
-          if (canSkipVerification) {
-            // Trust the index result for simple equality queries
+          if (skipVerification) {
+            // Trust the index result completely for simple equality queries
             results.push(this._getDocument(doc, docId));
-          } else {
-            // Still need to verify the document matches the full query
-            // since indexes might not cover all conditions
+          } else if (useHybridVerification || !skipVerification) {
+            // Verify the document matches the full query
+            // Either because we're in hybrid mode or can't skip verification
             try {
               if (query.test(doc)) {
                 results.push(this._getDocument(doc, docId));
@@ -1434,6 +1439,15 @@ export class Table<T extends Record<string, any> = any> {
     // Note: IndexManager doesn't expose a dropIndex method yet
     // This would need to be implemented in IndexManager
     console.warn(`Drop index not implemented for field: ${fieldName}`);
+  }
+
+  // Get query execution plan for debugging (query planner hook)
+  explainQuery(cond: QueryLike<T>): QueryPlan | null {
+    if (cond && typeof cond === 'object' && 'test' in cond && typeof (cond as any)._hash !== 'undefined') {
+      const queryInstance = cond as QueryInstance<T>;
+      return this._indexManager.analyzeQuery(queryInstance);
+    }
+    return null;
   }
 
   // String representation
