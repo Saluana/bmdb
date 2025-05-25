@@ -2,13 +2,17 @@ import { Table, Document } from './Table';
 import type { Storage } from '../storage/Storage';
 import { BmDbSchema } from '../schema/BmDbSchema';
 import { createUniqueConstraintError } from '../schema/errors';
-import { VectorUtils, type Vector, type VectorSearchResult } from '../utils/VectorUtils';
+import {
+    VectorUtils,
+    type Vector,
+    type VectorSearchResult,
+} from '../utils/VectorUtils';
 
 interface RelationshipConfig {
-    parentField: string;      // Field in this table that points to parent
-    childTable: string;       // Name of child table
-    childField: string;       // Field in child table that points back to this table
-    cascadeDelete: boolean;   // Whether to delete children when parent is deleted
+    parentField: string; // Field in this table that points to parent
+    childTable: string; // Name of child table
+    childField: string; // Field in child table that points back to this table
+    cascadeDelete: boolean; // Whether to delete children when parent is deleted
 }
 
 export class SchemaTable<T extends Record<string, any>> extends Table<T> {
@@ -39,26 +43,50 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
      * @param childField - Field in child table that references this table (e.g. 'user_id')
      * @param cascadeDelete - Whether to delete children when parent is deleted (default: true)
      */
-    hasMany(parentField: keyof T, childTable: string, childField: string, cascadeDelete: boolean = true): this {
+    hasMany(
+        parentField: keyof T,
+        childTable: string,
+        childField: string,
+        cascadeDelete: boolean = true
+    ): this {
         // Validation
         if (!parentField || typeof parentField !== 'string') {
-            throw new Error(`Invalid parentField '${String(parentField)}' in hasMany relationship`);
+            throw new Error(
+                `Invalid parentField '${String(
+                    parentField
+                )}' in hasMany relationship`
+            );
         }
-        if (!childTable || typeof childTable !== 'string' || childTable.trim() === '') {
-            throw new Error(`Invalid childTable '${childTable}' in hasMany relationship`);
+        if (
+            !childTable ||
+            typeof childTable !== 'string' ||
+            childTable.trim() === ''
+        ) {
+            throw new Error(
+                `Invalid childTable '${childTable}' in hasMany relationship`
+            );
         }
-        if (!childField || typeof childField !== 'string' || childField.trim() === '') {
-            throw new Error(`Invalid childField '${childField}' in hasMany relationship`);
+        if (
+            !childField ||
+            typeof childField !== 'string' ||
+            childField.trim() === ''
+        ) {
+            throw new Error(
+                `Invalid childField '${childField}' in hasMany relationship`
+            );
         }
         if (childTable === this._schema.tableName) {
-            console.warn(`Self-referencing relationship detected on table '${this._schema.tableName}'.`);
+            console.warn(
+                `Self-referencing relationship detected on table '${this._schema.tableName}'.`
+            );
         }
 
         // Check for duplicate relationships
-        const existing = this._relationships.find(rel => 
-            rel.parentField === parentField && 
-            rel.childTable === childTable && 
-            rel.childField === childField
+        const existing = this._relationships.find(
+            (rel) =>
+                rel.parentField === parentField &&
+                rel.childTable === childTable &&
+                rel.childField === childField
         );
         if (existing) {
             // Silently ignore duplicate relationships
@@ -69,13 +97,17 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             parentField: parentField as string,
             childTable,
             childField,
-            cascadeDelete
+            cascadeDelete,
         });
-        
+
         // Save relationships to persistence
         this._saveRelationships();
-        
-        console.log(`✓ Relationship defined: ${this._schema.tableName}.${parentField as string} -> ${childTable}.${childField} (cascade: ${cascadeDelete})`);
+
+        console.log(
+            `✓ Relationship defined: ${this._schema.tableName}.${
+                parentField as string
+            } -> ${childTable}.${childField} (cascade: ${cascadeDelete})`
+        );
         return this;
     }
 
@@ -90,7 +122,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
      * Get only relationships that have cascade delete enabled
      */
     getCascadeDeleteRelationships(): RelationshipConfig[] {
-        return this._relationships.filter(rel => rel.cascadeDelete);
+        return this._relationships.filter((rel) => rel.cascadeDelete);
     }
 
     /**
@@ -101,28 +133,35 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
      */
     findChildren(parentId: any, childTable?: string): any[] {
         if (!this._db) {
-            console.warn('Cannot find children: database instance not available');
+            console.warn(
+                'Cannot find children: database instance not available'
+            );
             return [];
         }
 
         const results: any[] = [];
-        const relationshipsToCheck = childTable 
-            ? this._relationships.filter(rel => rel.childTable === childTable)
+        const relationshipsToCheck = childTable
+            ? this._relationships.filter((rel) => rel.childTable === childTable)
             : this._relationships;
 
         for (const rel of relationshipsToCheck) {
             try {
-                const childTableInstance = this._db._tables?.get(rel.childTable);
+                const childTableInstance = this._db._tables?.get(
+                    rel.childTable
+                );
                 if (childTableInstance) {
                     // Use direct iteration instead of search method to avoid potential caching issues
                     const allRecords = childTableInstance.all();
-                    const children = allRecords.filter((child: any) => 
-                        child[rel.childField] === parentId
+                    const children = allRecords.filter(
+                        (child: any) => child[rel.childField] === parentId
                     );
                     results.push(...children);
                 }
             } catch (error) {
-                console.warn(`Error finding children in table '${rel.childTable}':`, error);
+                console.warn(
+                    `Error finding children in table '${rel.childTable}':`,
+                    error
+                );
             }
         }
 
@@ -148,23 +187,28 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
     hasChildren(parentId: any, childTable?: string): boolean {
         if (!this._db) return false;
 
-        const relationshipsToCheck = childTable 
-            ? this._relationships.filter(rel => rel.childTable === childTable)
+        const relationshipsToCheck = childTable
+            ? this._relationships.filter((rel) => rel.childTable === childTable)
             : this._relationships;
 
         for (const rel of relationshipsToCheck) {
             try {
-                const childTableInstance = this._db._tables?.get(rel.childTable);
+                const childTableInstance = this._db._tables?.get(
+                    rel.childTable
+                );
                 if (childTableInstance) {
                     // Use direct iteration instead of search method to avoid potential caching issues
                     const allRecords = childTableInstance.all();
-                    const hasMatch = allRecords.some((child: any) => 
-                        child[rel.childField] === parentId
+                    const hasMatch = allRecords.some(
+                        (child: any) => child[rel.childField] === parentId
                     );
                     if (hasMatch) return true;
                 }
             } catch (error) {
-                console.warn(`Error checking children in table '${rel.childTable}':`, error);
+                console.warn(
+                    `Error checking children in table '${rel.childTable}':`,
+                    error
+                );
             }
         }
 
@@ -177,20 +221,29 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
      * @param childTable - Child table name
      * @param childField - Child field name
      */
-    removeRelationship(parentField: keyof T, childTable: string, childField: string): this {
-        const index = this._relationships.findIndex(rel => 
-            rel.parentField === parentField && 
-            rel.childTable === childTable && 
-            rel.childField === childField
+    removeRelationship(
+        parentField: keyof T,
+        childTable: string,
+        childField: string
+    ): this {
+        const index = this._relationships.findIndex(
+            (rel) =>
+                rel.parentField === parentField &&
+                rel.childTable === childTable &&
+                rel.childField === childField
         );
-        
+
         if (index !== -1) {
             this._relationships.splice(index, 1);
             this._saveRelationships();
-            console.log(`✓ Removed relationship: ${this._schema.tableName}.${parentField as string} -> ${childTable}.${childField}`);
+            console.log(
+                `✓ Removed relationship: ${this._schema.tableName}.${
+                    parentField as string
+                } -> ${childTable}.${childField}`
+            );
         }
         // Silently ignore attempts to remove non-existent relationships
-        
+
         return this;
     }
 
@@ -201,7 +254,9 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         const count = this._relationships.length;
         this._relationships = [];
         this._saveRelationships();
-        console.log(`✓ Cleared ${count} relationships from table '${this._schema.tableName}'`);
+        console.log(
+            `✓ Cleared ${count} relationships from table '${this._schema.tableName}'`
+        );
         return this;
     }
 
@@ -209,9 +264,15 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
      * Save relationships to persistence layer
      */
     private _saveRelationships(): void {
-        if (this._db && typeof this._db._saveRelationshipsMetadata === 'function') {
+        if (
+            this._db &&
+            typeof this._db._saveRelationshipsMetadata === 'function'
+        ) {
             try {
-                this._db._saveRelationshipsMetadata(this._schema.tableName, this._relationships);
+                this._db._saveRelationshipsMetadata(
+                    this._schema.tableName,
+                    this._relationships
+                );
             } catch (error) {
                 console.warn('Failed to save relationships metadata:', error);
             }
@@ -224,10 +285,82 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
     _loadRelationships(relationships: RelationshipConfig[]): void {
         if (Array.isArray(relationships)) {
             this._relationships = [...relationships];
-            console.log(`✓ Loaded ${relationships.length} relationships for table '${this._schema.tableName}'`);
+            console.log(
+                `✓ Loaded ${relationships.length} relationships for table '${this._schema.tableName}'`
+            );
         }
     }
 
+    /**
+     * Validate that foreign key relationships exist
+     * @param data - The data to validate
+     */
+    private validateRelationships(data: T): void {
+        if (!this._db) return;
+
+        // Find all fields that might be foreign keys by checking if they reference other tables
+        // We'll check if this table is the child in any relationships from other tables
+        const allTables = this._db._tables;
+        if (!allTables) return;
+
+        for (const [tableName, table] of allTables) {
+            // Check if this table is a child in any of the table's relationships (including self)
+            if (table._relationships) {
+                for (const rel of table._relationships) {
+                    if (rel.childTable === this._schema.tableName) {
+                        // This table is a child, so we need to validate the foreign key
+                        const foreignKeyValue = data[rel.childField as keyof T];
+                        if (foreignKeyValue !== undefined && foreignKeyValue !== null) {
+                            // Check if the referenced parent record exists
+                            const parentRecord = table.get(undefined, foreignKeyValue);
+                            if (!parentRecord) {
+                                throw new Error(
+                                    `Foreign key constraint failed: ${rel.childField}=${foreignKeyValue} not found in table '${tableName}'`
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Validate that foreign key relationships exist for partial update data
+     * @param fields - The partial update data to validate
+     */
+    private validateRelationshipsForUpdate(fields: Partial<T>): void {
+        if (!this._db) return;
+
+        // Find all fields that might be foreign keys by checking if they reference other tables
+        // We'll check if this table is the child in any relationships from other tables
+        const allTables = this._db._tables;
+        if (!allTables) return;
+
+        for (const [tableName, table] of allTables) {
+            // Check if this table is a child in any of the table's relationships (including self)
+            if (table._relationships) {
+                for (const rel of table._relationships) {
+                    if (rel.childTable === this._schema.tableName) {
+                        // This table is a child, so we need to validate the foreign key if it's being updated
+                        const fieldKey = rel.childField as keyof T;
+                        if (fieldKey in fields) {
+                            const foreignKeyValue = fields[fieldKey];
+                            if (foreignKeyValue !== undefined && foreignKeyValue !== null) {
+                                // Check if the referenced parent record exists
+                                const parentRecord = table.get(undefined, foreignKeyValue);
+                                if (!parentRecord) {
+                                    throw new Error(
+                                        `Foreign key constraint failed: ${rel.childField}=${foreignKeyValue} not found in table '${tableName}'`
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Override insert to add validation
     insert(document: T | Document): number {
@@ -240,6 +373,9 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         // Validate vector fields
         this.validateVectorFields(validatedData);
 
+        // Validate relationships
+        this.validateRelationships(validatedData);
+
         // Check uniqueness constraints using storage indexes when available
         const uniqueFields = this._schema.getUniqueFields();
         for (const field of uniqueFields) {
@@ -251,7 +387,11 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             const table = this._readTable();
             for (const doc of Object.values(table)) {
                 if (doc[field as string] === value) {
-                    throw createUniqueConstraintError(String(field), value, this._schema.tableName);
+                    throw createUniqueConstraintError(
+                        String(field),
+                        value,
+                        this._schema.tableName
+                    );
                 }
             }
         }
@@ -259,16 +399,20 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         // Check compound unique constraints with optimization
         const compoundGroups = this._schema.getCompoundIndexGroups();
         for (const [groupName, fields] of Object.entries(compoundGroups)) {
-            const values = fields.map(field => validatedData[field]);
-            if (values.some(v => v === undefined || v === null)) continue;
+            const values = fields.map((field) => validatedData[field]);
+            if (values.some((v) => v === undefined || v === null)) continue;
 
             // Optimized compound uniqueness checking with early termination
             const table = this._readTable();
             const valuesStr = JSON.stringify(values);
             for (const doc of Object.values(table)) {
-                const docValues = fields.map(field => (doc as any)[field]);
+                const docValues = fields.map((field) => (doc as any)[field]);
                 if (JSON.stringify(docValues) === valuesStr) {
-                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values, this._schema.tableName);
+                    throw createUniqueConstraintError(
+                        `compound(${fields.join(',')})`,
+                        values,
+                        this._schema.tableName
+                    );
                 }
             }
         }
@@ -288,6 +432,7 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                     : document;
             const validatedData = this._schema.validate(data);
             this.validateVectorFields(validatedData);
+            this.validateRelationships(validatedData);
             validatedDocs.push(validatedData);
         }
 
@@ -315,10 +460,14 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
 
                 const fieldStr = String(field);
                 const batchSet = batchUniqueValues.get(fieldStr)!;
-                
+
                 // Check for duplicates within the batch first
                 if (batchSet.has(value)) {
-                    throw createUniqueConstraintError(fieldStr, value, this._schema.tableName);
+                    throw createUniqueConstraintError(
+                        fieldStr,
+                        value,
+                        this._schema.tableName
+                    );
                 }
                 batchSet.add(value);
 
@@ -331,35 +480,49 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                     }
                 }
                 if (found) {
-                    throw createUniqueConstraintError(fieldStr, value, this._schema.tableName);
+                    throw createUniqueConstraintError(
+                        fieldStr,
+                        value,
+                        this._schema.tableName
+                    );
                 }
             }
 
             // Check compound uniqueness
             for (const [groupName, fields] of Object.entries(compoundGroups)) {
-                const values = fields.map(field => data[field]);
-                if (values.some(v => v === undefined || v === null)) continue;
+                const values = fields.map((field) => data[field]);
+                if (values.some((v) => v === undefined || v === null)) continue;
 
                 const valuesStr = JSON.stringify(values);
                 const batchSet = batchCompoundValues.get(groupName)!;
-                
+
                 // Check for duplicates within the batch first
                 if (batchSet.has(valuesStr)) {
-                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values, this._schema.tableName);
+                    throw createUniqueConstraintError(
+                        `compound(${fields.join(',')})`,
+                        values,
+                        this._schema.tableName
+                    );
                 }
                 batchSet.add(valuesStr);
 
                 // Check against existing data with early termination
                 let found = false;
                 for (const doc of Object.values(table)) {
-                    const docValues = fields.map(field => (doc as any)[field]);
+                    const docValues = fields.map(
+                        (field) => (doc as any)[field]
+                    );
                     if (JSON.stringify(docValues) === valuesStr) {
                         found = true;
                         break;
                     }
                 }
                 if (found) {
-                    throw createUniqueConstraintError(`compound(${fields.join(',')})`, values, this._schema.tableName);
+                    throw createUniqueConstraintError(
+                        `compound(${fields.join(',')})`,
+                        values,
+                        this._schema.tableName
+                    );
                 }
             }
         }
@@ -387,6 +550,64 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             }
         }
 
+        // Validate relationships for fields being updated
+        this.validateRelationshipsForUpdate(fields);
+
+        // Check unique constraints for fields being updated
+        const uniqueFields = this._schema.getUniqueFields();
+        const fieldsToUpdate = fields as Partial<T>;
+
+        for (const field of uniqueFields) {
+            if (field in fieldsToUpdate) {
+                const value = fieldsToUpdate[field];
+                if (value === undefined || value === null) continue;
+
+                // Get the table data
+                const table = this._readTable();
+
+                // Find which documents will be updated
+                let docsToUpdate: string[] = [];
+                if (docIds) {
+                    docsToUpdate = docIds.map((id) => String(id));
+                } else if (cond) {
+                    // Find matching documents
+                    for (const [docIdStr, doc] of Object.entries(table)) {
+                        let matches = false;
+                        try {
+                            if (typeof cond === 'function') {
+                                matches = cond(doc);
+                            } else if (
+                                cond &&
+                                typeof cond === 'object' &&
+                                'test' in cond
+                            ) {
+                                matches = (cond as any).test(doc);
+                            }
+                        } catch (error) {
+                            matches = false;
+                        }
+                        if (matches) {
+                            docsToUpdate.push(docIdStr);
+                        }
+                    }
+                }
+
+                // Check if any other document (not being updated) has this value
+                for (const [docIdStr, doc] of Object.entries(table)) {
+                    if (
+                        !docsToUpdate.includes(docIdStr) &&
+                        doc[field as string] === value
+                    ) {
+                        throw createUniqueConstraintError(
+                            String(field),
+                            value,
+                            this._schema.tableName
+                        );
+                    }
+                }
+            }
+        }
+
         return super.update(fields, cond, docIds);
     }
 
@@ -404,10 +625,10 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
     remove(cond?: any, docIds?: number[]): number[] {
         // First get the documents that will be deleted for cascade operations
         let docsToDelete: any[] = [];
-        
+
         if (docIds) {
             const docs = this.get(undefined, undefined, docIds);
-            docsToDelete = Array.isArray(docs) ? docs : (docs ? [docs] : []);
+            docsToDelete = Array.isArray(docs) ? docs : docs ? [docs] : [];
         } else if (cond) {
             docsToDelete = this.search(cond);
         }
@@ -451,14 +672,16 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             // Skip self-referencing relationships to prevent infinite loops
             const currentTableName = this._schema.tableName;
             if (relationship.childTable === currentTableName) {
-                console.warn(`Skipping self-referencing cascade delete for table '${currentTableName}'.`);
+                console.warn(
+                    `Skipping self-referencing cascade delete for table '${currentTableName}'.`
+                );
                 continue;
             }
-            
+
             if (!deletionsByTable.has(relationship.childTable)) {
                 deletionsByTable.set(relationship.childTable, new Map());
             }
-            
+
             const tableMap = deletionsByTable.get(relationship.childTable)!;
             if (!tableMap.has(relationship.childField)) {
                 tableMap.set(relationship.childField, []);
@@ -478,12 +701,16 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
             try {
                 const childTable = this._db._tables?.get(childTableName);
                 if (!childTable) {
-                    console.warn(`Child table '${childTableName}' not found for cascade delete`);
+                    console.warn(
+                        `Child table '${childTableName}' not found for cascade delete`
+                    );
                     continue;
                 }
 
                 if (typeof childTable.remove !== 'function') {
-                    console.warn(`Child table '${childTableName}' is not a schema table, skipping cascade`);
+                    console.warn(
+                        `Child table '${childTableName}' is not a schema table, skipping cascade`
+                    );
                     continue;
                 }
 
@@ -493,15 +720,18 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
 
                     // Use Set for O(1) lookup performance
                     const parentValueSet = new Set(parentValues);
-                    
+
                     // Find all children that match any of the parent values
-                    const childrenToDelete = childTable.search((childDoc: any) => 
-                        parentValueSet.has(childDoc[childField])
+                    const childrenToDelete = childTable.search(
+                        (childDoc: any) =>
+                            parentValueSet.has(childDoc[childField])
                     );
 
                     if (childrenToDelete.length > 0) {
-                        const childIds = childrenToDelete.map((child: any) => child.doc_id);
-                        
+                        const childIds = childrenToDelete.map(
+                            (child: any) => child.doc_id
+                        );
+
                         // Use regular remove method which will trigger its own cascades
                         childTable.remove(undefined, childIds);
                         totalDeleted += childrenToDelete.length;
@@ -509,10 +739,15 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
                 }
 
                 if (totalDeleted > 0) {
-                    console.log(`Cascade deleted ${totalDeleted} records from ${childTableName}`);
+                    console.log(
+                        `Cascade deleted ${totalDeleted} records from ${childTableName}`
+                    );
                 }
             } catch (error) {
-                console.warn(`Error during cascade delete for table '${childTableName}':`, error);
+                console.warn(
+                    `Error during cascade delete for table '${childTableName}':`,
+                    error
+                );
             }
         }
     }
@@ -547,43 +782,71 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         for (const field of vectorFields) {
             const fieldMeta = this._schema.getFieldMeta(field);
             const value = data[field];
-            
-            if (value !== undefined && value !== null && fieldMeta?.isVector && fieldMeta.vectorDimensions) {
+
+            if (
+                value !== undefined &&
+                value !== null &&
+                fieldMeta?.isVector &&
+                fieldMeta.vectorDimensions
+            ) {
                 VectorUtils.validateVector(value, fieldMeta.vectorDimensions);
             }
         }
     }
 
     // Index management methods
-    async createIndex(field: keyof T, options?: { unique?: boolean }): Promise<void> {
+    async createIndex(
+        field: keyof T,
+        options?: { unique?: boolean }
+    ): Promise<void> {
         return this.storage.createIndex(this.name, String(field), options);
     }
 
-    async createCompoundIndex(fields: Array<keyof T>, options?: { unique?: boolean; name?: string }): Promise<void> {
-        return this.storage.createCompoundIndex(this.name, fields.map(String), options);
+    async createCompoundIndex(
+        fields: Array<keyof T>,
+        options?: { unique?: boolean; name?: string }
+    ): Promise<void> {
+        return this.storage.createCompoundIndex(
+            this.name,
+            fields.map(String),
+            options
+        );
     }
 
     async dropIndex(indexName: string): Promise<void> {
         return this.storage.dropIndex(this.name, indexName);
     }
 
-    async listIndexes(): Promise<import('../storage/Storage').IndexDefinition[]> {
+    async listIndexes(): Promise<
+        import('../storage/Storage').IndexDefinition[]
+    > {
         return this.storage.listIndexes(this.name);
     }
 
     // Vector operations
-    async createVectorIndex(field: keyof T, options?: { algorithm?: 'cosine' | 'euclidean' | 'dot' | 'manhattan' }): Promise<void> {
+    async createVectorIndex(
+        field: keyof T,
+        options?: { algorithm?: 'cosine' | 'euclidean' | 'dot' | 'manhattan' }
+    ): Promise<void> {
         const fieldMeta = this._schema.getFieldMeta(field);
         if (!fieldMeta?.isVector) {
             throw new Error(`Field '${String(field)}' is not a vector field`);
         }
-        
+
         if (!fieldMeta.vectorDimensions) {
-            throw new Error(`Vector field '${String(field)}' does not specify dimensions`);
+            throw new Error(
+                `Vector field '${String(field)}' does not specify dimensions`
+            );
         }
 
-        const algorithm = options?.algorithm || fieldMeta.vectorSearchAlgorithm || 'cosine';
-        return this.storage.createVectorIndex(this.name, String(field), fieldMeta.vectorDimensions, algorithm);
+        const algorithm =
+            options?.algorithm || fieldMeta.vectorSearchAlgorithm || 'cosine';
+        return this.storage.createVectorIndex(
+            this.name,
+            String(field),
+            fieldMeta.vectorDimensions,
+            algorithm
+        );
     }
 
     async dropVectorIndex(field: keyof T): Promise<void> {
@@ -591,18 +854,29 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         return this.storage.dropVectorIndex(this.name, indexName);
     }
 
-    async vectorSearch(field: keyof T, queryVector: Vector, options?: { limit?: number; threshold?: number }): Promise<VectorSearchResult[]> {
+    async vectorSearch(
+        field: keyof T,
+        queryVector: Vector,
+        options?: { limit?: number; threshold?: number }
+    ): Promise<VectorSearchResult[]> {
         const fieldMeta = this._schema.getFieldMeta(field);
         if (!fieldMeta?.isVector) {
             throw new Error(`Field '${String(field)}' is not a vector field`);
         }
 
         if (!fieldMeta.vectorDimensions) {
-            throw new Error(`Vector field '${String(field)}' does not specify dimensions`);
+            throw new Error(
+                `Vector field '${String(field)}' does not specify dimensions`
+            );
         }
 
         VectorUtils.validateVector(queryVector, fieldMeta.vectorDimensions);
-        return this.storage.vectorSearch(this.name, String(field), queryVector, options);
+        return this.storage.vectorSearch(
+            this.name,
+            String(field),
+            queryVector,
+            options
+        );
     }
 
     // Auto-create indexes based on schema metadata
@@ -616,9 +890,9 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         // Create compound indexes
         const compoundGroups = this._schema.getCompoundIndexGroups();
         for (const [groupName, fields] of Object.entries(compoundGroups)) {
-            await this.createCompoundIndex(fields, { 
-                unique: true, 
-                name: `${this.name}_compound_${groupName}` 
+            await this.createCompoundIndex(fields, {
+                unique: true,
+                name: `${this.name}_compound_${groupName}`,
             });
         }
 

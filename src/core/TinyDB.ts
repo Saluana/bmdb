@@ -27,50 +27,69 @@ export class TinyDB {
     private _poolManager = new PoolManager();
 
     constructor(
-        pathOrOptions: string | { storage?: StorageCtor } = 'db.json',
+        pathOrOptionsOrStorage:
+            | string
+            | { storage?: StorageCtor }
+            | Storage = 'db.json',
         options: { storage?: StorageCtor } = {}
     ) {
         // Handle different constructor patterns
         let StorageCls = TinyDB.defaultStorageClass;
         let storageArgs: any[] = [];
 
-        // Validate storage class if provided
-        if (options.storage) {
-            if (typeof options.storage !== 'function') {
-                throw new Error(
-                    'Storage option must be a constructor function'
-                );
-            }
-            StorageCls = options.storage as any;
-            storageArgs = [pathOrOptions];
-        } else if (
-            typeof pathOrOptions === 'object' &&
-            pathOrOptions !== null &&
-            pathOrOptions.storage
+        // Check if first argument is already a storage instance
+        if (
+            pathOrOptionsOrStorage &&
+            typeof pathOrOptionsOrStorage === 'object' &&
+            'read' in pathOrOptionsOrStorage &&
+            'write' in pathOrOptionsOrStorage
         ) {
-            if (typeof pathOrOptions.storage !== 'function') {
+            // This is a storage instance
+            this._storage = pathOrOptionsOrStorage as Storage;
+        } else {
+            // Handle the original patterns
+            const pathOrOptions = pathOrOptionsOrStorage as
+                | string
+                | { storage?: StorageCtor };
+
+            // Validate storage class if provided
+            if (options.storage) {
+                if (typeof options.storage !== 'function') {
+                    throw new Error(
+                        'Storage option must be a constructor function'
+                    );
+                }
+                StorageCls = options.storage as any;
+                storageArgs = [pathOrOptions];
+            } else if (
+                typeof pathOrOptions === 'object' &&
+                pathOrOptions !== null &&
+                pathOrOptions.storage
+            ) {
+                if (typeof pathOrOptions.storage !== 'function') {
+                    throw new Error(
+                        'Storage option must be a constructor function'
+                    );
+                }
+                StorageCls = pathOrOptions.storage as any;
+                storageArgs = [];
+            } else if (typeof pathOrOptions === 'string') {
+                storageArgs = [pathOrOptions];
+            } else {
                 throw new Error(
-                    'Storage option must be a constructor function'
+                    'First argument must be a string path, options object, or storage instance'
                 );
             }
-            StorageCls = pathOrOptions.storage as any;
-            storageArgs = [];
-        } else if (typeof pathOrOptions === 'string') {
-            storageArgs = [pathOrOptions];
-        } else {
-            throw new Error(
-                'First argument must be a string path or options object'
-            );
-        }
 
-        try {
-            this._storage = new StorageCls(...storageArgs);
-        } catch (error) {
-            throw new Error(
-                `Failed to initialize storage: ${
-                    error instanceof Error ? error.message : String(error)
-                }`
-            );
+            try {
+                this._storage = new StorageCls(...storageArgs);
+            } catch (error) {
+                throw new Error(
+                    `Failed to initialize storage: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
+            }
         }
 
         // Load existing data
@@ -80,9 +99,17 @@ export class TinyDB {
                 // First, load schema metadata if it exists
                 const schemaMetadata = new Map<string, any>();
                 if (data[TinyDB.schemaMetadataTableName]) {
-                    const metadataTable = data[TinyDB.schemaMetadataTableName] as Record<string, any>;
-                    for (const [docId, metadata] of Object.entries(metadataTable)) {
-                        if (metadata && typeof metadata === 'object' && metadata.tableName) {
+                    const metadataTable = data[
+                        TinyDB.schemaMetadataTableName
+                    ] as Record<string, any>;
+                    for (const [docId, metadata] of Object.entries(
+                        metadataTable
+                    )) {
+                        if (
+                            metadata &&
+                            typeof metadata === 'object' &&
+                            metadata.tableName
+                        ) {
                             schemaMetadata.set(metadata.tableName, metadata);
                         }
                     }
@@ -97,7 +124,7 @@ export class TinyDB {
                         typeof tableData === 'object'
                     ) {
                         let table: Table<any>;
-                        
+
                         // Check if this table has schema metadata
                         const metadata = schemaMetadata.get(name);
                         if (metadata && metadata.schemaDefinition) {
@@ -107,14 +134,16 @@ export class TinyDB {
                             table = new TinyDB.tableClass(this._storage, name);
                             table._loadData(tableData as Record<string, any>);
                             // Mark this table as requiring schema restoration
-                            (table as any)._requiresSchemaRestoration = metadata;
-                            (table as any)._relationshipsToRestore = metadata.relationships || [];
+                            (table as any)._requiresSchemaRestoration =
+                                metadata;
+                            (table as any)._relationshipsToRestore =
+                                metadata.relationships || [];
                         } else {
                             // Regular table
                             table = new TinyDB.tableClass(this._storage, name);
                             table._loadData(tableData as Record<string, any>);
                         }
-                        
+
                         this._tables.set(name, table);
                     }
                 }
@@ -162,7 +191,11 @@ export class TinyDB {
         return this._tables.get(TinyDB.schemaMetadataTableName)!;
     }
 
-    private _saveSchemaMetadata(tableName: string, schema: BmDbSchema<any>, relationships?: any[]): void {
+    private _saveSchemaMetadata(
+        tableName: string,
+        schema: BmDbSchema<any>,
+        relationships?: any[]
+    ): void {
         const metadataTable = this._getSchemaMetadataTable();
         const metadata = {
             tableName,
@@ -171,13 +204,15 @@ export class TinyDB {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
         };
-        
+
         // Remove existing metadata for this table
-        const existingDocs = metadataTable.search((doc: any) => doc.tableName === tableName);
+        const existingDocs = metadataTable.search(
+            (doc: any) => doc.tableName === tableName
+        );
         if (existingDocs.length > 0) {
             metadataTable.remove((doc: any) => doc.tableName === tableName);
         }
-        
+
         metadataTable.insert(metadata);
     }
 
@@ -186,9 +221,11 @@ export class TinyDB {
      */
     _saveRelationshipsMetadata(tableName: string, relationships: any[]): void {
         const metadataTable = this._getSchemaMetadataTable();
-        
+
         // Find existing metadata
-        const existingDocs = metadataTable.search((doc: any) => doc.tableName === tableName);
+        const existingDocs = metadataTable.search(
+            (doc: any) => doc.tableName === tableName
+        );
         if (existingDocs.length > 0) {
             // Update existing metadata with relationships
             const existingDoc = existingDocs[0];
@@ -198,7 +235,11 @@ export class TinyDB {
             );
         } else {
             // Create new metadata entry
-            this._saveSchemaMetadata(tableName, { serialize: () => ({}) } as any, relationships);
+            this._saveSchemaMetadata(
+                tableName,
+                { serialize: () => ({}) } as any,
+                relationships
+            );
         }
     }
 
@@ -254,7 +295,7 @@ export class TinyDB {
             if (existing instanceof SchemaTable) {
                 return existing as SchemaTable<T>;
             }
-            
+
             // Check if this table was marked for schema restoration
             if ((existing as any)._requiresSchemaRestoration) {
                 // Convert the regular table to a schema table
@@ -265,7 +306,7 @@ export class TinyDB {
                     options,
                     this
                 );
-                
+
                 // Copy the existing data
                 const existingData = existing!.all();
                 if (existingData.length > 0) {
@@ -274,33 +315,48 @@ export class TinyDB {
                     for (const doc of existingData) {
                         // Remove the doc_id for reinsertion
                         const { doc_id, ...dataWithoutId } = doc;
-                        
+
                         // Deserialize the data to convert JSON strings back to proper types
                         try {
-                            const deserializedData = schema.deserialize(dataWithoutId);
-                            const validatedData = schema.validate(deserializedData);
+                            const deserializedData =
+                                schema.deserialize(dataWithoutId);
+                            const validatedData =
+                                schema.validate(deserializedData);
                             schemaTable.insert(validatedData);
                         } catch (restorationError) {
-                            console.warn('Failed to restore data for table', tableName, ':', restorationError);
+                            console.warn(
+                                'Failed to restore data for table',
+                                tableName,
+                                ':',
+                                restorationError
+                            );
                         }
                     }
                 }
-                
+
                 // Replace the table in our map
                 this._tables.set(tableName, schemaTable);
-                
+
                 // Load relationships if they were saved
-                const relationshipsToRestore = (existing as any)._relationshipsToRestore;
-                if (relationshipsToRestore && Array.isArray(relationshipsToRestore)) {
+                const relationshipsToRestore = (existing as any)
+                    ._relationshipsToRestore;
+                if (
+                    relationshipsToRestore &&
+                    Array.isArray(relationshipsToRestore)
+                ) {
                     schemaTable._loadRelationships(relationshipsToRestore);
                 }
-                
+
                 // Save schema metadata (preserve relationships)
-                this._saveSchemaMetadata(tableName, schema, relationshipsToRestore);
-                
+                this._saveSchemaMetadata(
+                    tableName,
+                    schema,
+                    relationshipsToRestore
+                );
+
                 return schemaTable;
             }
-            
+
             throw new Error(
                 `Table '${tableName}' already exists as a non-schema table`
             );
@@ -314,10 +370,10 @@ export class TinyDB {
             this
         );
         this._tables.set(tableName, table);
-        
+
         // Save schema metadata
         this._saveSchemaMetadata(tableName, schema);
-        
+
         return table;
     }
 
@@ -326,8 +382,10 @@ export class TinyDB {
             const data = this._storage.read();
             if (data && typeof data === 'object' && data !== null) {
                 return new Set(
-                    Object.keys(data).filter((key) => 
-                        typeof key === 'string' && key !== TinyDB.schemaMetadataTableName
+                    Object.keys(data).filter(
+                        (key) =>
+                            typeof key === 'string' &&
+                            key !== TinyDB.schemaMetadataTableName
                     )
                 );
             }
@@ -568,7 +626,10 @@ export class TinyDB {
         cond: any,
         options: ParallelQueryOptions = {}
     ): Promise<any[]> {
-        return this.table(TinyDB.defaultTableName).searchParallel(cond, options);
+        return this.table(TinyDB.defaultTableName).searchParallel(
+            cond,
+            options
+        );
     }
 
     async updateParallel(
@@ -578,7 +639,10 @@ export class TinyDB {
         }>,
         options: ParallelQueryOptions = {}
     ): Promise<number[]> {
-        return this.table(TinyDB.defaultTableName).updateParallel(updates, options);
+        return this.table(TinyDB.defaultTableName).updateParallel(
+            updates,
+            options
+        );
     }
 
     async aggregateParallel<R>(
