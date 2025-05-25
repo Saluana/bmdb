@@ -14,6 +14,7 @@ const testFiles = [
     'integration.test.ts',
     'util/LRUCache.test.ts',
     'util/messagePackUtil.test.ts',
+    'util/objectPool.test.ts',
 ];
 
 interface TestResult {
