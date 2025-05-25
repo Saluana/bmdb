@@ -941,15 +941,20 @@ export class Table<T extends Record<string, any> = any> {
         docIds?: number[]
     ): number[] {
         const updatedIds: number[] = [];
-        const oldDocuments = new Map<number, Record<string, any>>();
+        const documentsToUpdate = new Map<number, Record<string, any>>();
+        const indexUpdates: Array<{
+            docId: number;
+            oldDocument: Record<string, any>;
+            newDocument: Record<string, any>;
+        }> = [];
 
-        // First pass: collect old documents for index updates
+        // First pass: collect documents to update
         const table = this._readTable();
         if (docIds !== undefined) {
             for (const docId of docIds) {
                 const doc = table[String(docId)];
                 if (doc) {
-                    oldDocuments.set(docId, { ...doc });
+                    documentsToUpdate.set(docId, { ...doc });
                 }
             }
         } else if (cond !== undefined) {
@@ -971,14 +976,14 @@ export class Table<T extends Record<string, any> = any> {
 
                 if (matches) {
                     const docId = Table.documentIdClass(docIdStr);
-                    oldDocuments.set(docId, { ...doc });
+                    documentsToUpdate.set(docId, { ...doc });
                 }
             }
         } else {
             // Update all documents
             for (const [docIdStr, doc] of Object.entries(table)) {
                 const docId = Table.documentIdClass(docIdStr);
-                oldDocuments.set(docId, { ...doc });
+                documentsToUpdate.set(docId, { ...doc });
             }
         }
 
@@ -987,19 +992,32 @@ export class Table<T extends Record<string, any> = any> {
                 ? (doc: Record<string, any>) => fields(doc)
                 : (doc: Record<string, any>) => Object.assign(doc, fields);
 
-        // Second pass: perform updates
+        // Second pass: perform updates in a single storage operation
         this._updateTable((table) => {
-            for (const [docId, oldDoc] of oldDocuments) {
+            for (const [docId, oldDoc] of documentsToUpdate) {
                 const doc = table[String(docId)];
                 if (doc) {
+                    // Store the old document for index updates
+                    const oldDocCopy = { ...doc };
+                    
+                    // Perform the update
                     performUpdate(doc);
                     updatedIds.push(docId);
 
-                    // Update indexes
-                    this._indexManager.updateDocument(docId, oldDoc, doc);
+                    // Collect index update data
+                    indexUpdates.push({
+                        docId,
+                        oldDocument: oldDocCopy,
+                        newDocument: { ...doc },
+                    });
                 }
             }
         });
+
+        // Third pass: batch update indexes after all document updates are complete
+        if (indexUpdates.length > 0) {
+            this._indexManager.updateDocumentsBatch(indexUpdates);
+        }
 
         return updatedIds;
     }

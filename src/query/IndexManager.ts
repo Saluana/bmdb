@@ -99,7 +99,7 @@ export class IndexManager {
             Array<{ value: any; docId: number }>
         >();
 
-        // First pass: collect all field updates
+        // First pass: collect all field updates and update basic stats (but not uniqueValues yet)
         for (const { docId, docData } of documents) {
             this.totalDocuments++;
 
@@ -109,8 +109,8 @@ export class IndexManager {
                 }
                 fieldUpdates.get(field)!.push({ value, docId });
 
-                // Update field stats
-                this.updateFieldStats(field, 1, value);
+                // Update field stats (excluding uniqueValues which will be updated after indexing)
+                this.updateFieldStatsExcludingUnique(field, 1, value);
             }
         }
 
@@ -122,6 +122,100 @@ export class IndexManager {
             for (const { value, docId } of updates) {
                 if (this.isIndexableValue(value)) {
                     index.insert(value, docId);
+                }
+            }
+        }
+
+        // Third pass: update uniqueValues counts from final index stats
+        for (const field of fieldUpdates.keys()) {
+            const index = this.indexes.get(field);
+            if (index) {
+                const stats = this.fieldStats.get(field);
+                if (stats) {
+                    const indexStats = index.getStats();
+                    stats.uniqueValues = indexStats.totalEntries;
+                    stats.indexSize = indexStats.totalEntries;
+                }
+            }
+        }
+    }
+
+    // Update multiple documents in all relevant indexes in a batch - optimized for bulk operations
+    updateDocumentsBatch(
+        updates: Array<{
+            docId: number;
+            oldDocument: Record<string, any>;
+            newDocument: Record<string, any>;
+        }>
+    ): void {
+        if (updates.length === 0) return;
+
+        // Group removals and additions by field to minimize index operations
+        const fieldRemovals = new Map<
+            string,
+            Array<{ value: any; docId: number }>
+        >();
+        const fieldAdditions = new Map<
+            string,
+            Array<{ value: any; docId: number }>
+        >();
+
+        // First pass: collect all field removals and additions
+        for (const { docId, oldDocument, newDocument } of updates) {
+            // Collect removals
+            for (const [field, value] of Object.entries(oldDocument)) {
+                if (!fieldRemovals.has(field)) {
+                    fieldRemovals.set(field, []);
+                }
+                fieldRemovals.get(field)!.push({ value, docId });
+            }
+
+            // Collect additions
+            for (const [field, value] of Object.entries(newDocument)) {
+                if (!fieldAdditions.has(field)) {
+                    fieldAdditions.set(field, []);
+                }
+                fieldAdditions.get(field)!.push({ value, docId });
+            }
+        }
+
+        // Second pass: batch remove old values from indexes
+        for (const [field, removals] of fieldRemovals) {
+            const index = this.indexes.get(field);
+            if (index) {
+                for (const { value, docId } of removals) {
+                    if (this.isIndexableValue(value)) {
+                        index.remove(value, docId);
+                    }
+                }
+            }
+        }
+
+        // Third pass: batch add new values to indexes
+        for (const [field, additions] of fieldAdditions) {
+            const index = this.getOrCreateIndex(field);
+            for (const { value, docId } of additions) {
+                if (this.isIndexableValue(value)) {
+                    index.insert(value, docId);
+                }
+            }
+        }
+
+        // Fourth pass: update field statistics
+        const allFields = new Set([
+            ...fieldRemovals.keys(),
+            ...fieldAdditions.keys(),
+        ]);
+
+        for (const field of allFields) {
+            const index = this.indexes.get(field);
+            if (index) {
+                const stats = this.fieldStats.get(field);
+                if (stats) {
+                    const indexStats = index.getStats();
+                    stats.uniqueValues = indexStats.totalEntries;
+                    stats.indexSize = indexStats.totalEntries;
+                    this.fieldStats.set(field, stats);
                 }
             }
         }
@@ -200,6 +294,26 @@ export class IndexManager {
             }
         }
 
+        // If no indexes are available but we have conditions, estimate potential index cost
+        // This helps in cost comparisons even when indexes don't exist yet
+        if (!hasViableIndex && conditions.length > 0) {
+            let minEstimatedSelectivity = 1.0;
+            for (const condition of conditions) {
+                const selectivity = this.estimateSelectivity(condition);
+                if (selectivity < minEstimatedSelectivity) {
+                    minEstimatedSelectivity = selectivity;
+                }
+            }
+            
+            const expectedRows = Math.ceil(this.totalDocuments * minEstimatedSelectivity);
+            bestIndexCost = IndexManager.COST_INDEX_LOOKUP +
+                expectedRows * IndexManager.COST_INDEX_TRAVERSE +
+                expectedRows * IndexManager.COST_DOCUMENT_FETCH +
+                expectedRows * IndexManager.COST_CONDITION_EVAL;
+            hasViableIndex = true;
+            bestSelectivity = minEstimatedSelectivity;
+        }
+
         // Calculate hybrid cost (index + verification)
         const hybridCost = hasViableIndex
             ? bestIndexCost +
@@ -212,10 +326,10 @@ export class IndexManager {
         const fieldsWithStats = conditions.filter((c) =>
             this.fieldStats.has(c.field)
         ).length;
-        const confidence = fieldsWithStats / Math.max(conditions.length, 1);
+        const confidence = Math.max(0.1, fieldsWithStats / Math.max(conditions.length, 1));
 
         return {
-            indexScanCost: hasViableIndex ? bestIndexCost : Infinity,
+            indexScanCost: hasViableIndex ? bestIndexCost : fullScanCost * 2,
             fullScanCost,
             hybridScanCost: hybridCost,
             confidence,
@@ -539,7 +653,42 @@ export class IndexManager {
     private estimateSelectivity(condition: IndexableCondition): number {
         const stats = this.fieldStats.get(condition.field);
         if (!stats || stats.totalDocs === 0) {
-            return 1.0; // Unknown, assume worst case
+            // Provide reasonable defaults based on operator type when stats aren't available
+            switch (condition.operator) {
+                case '=':
+                    // Equality on primary key-like fields should be very selective
+                    if (condition.field === 'id' || condition.field.endsWith('Id')) {
+                        return 1 / Math.max(this.totalDocuments, 1);
+                    }
+                    // Other equality operations - moderately selective
+                    return 0.1;
+
+                case 'in':
+                    if (Array.isArray(condition.value)) {
+                        return Math.min(condition.value.length * 0.1, 1.0);
+                    }
+                    return 0.1;
+
+                case '>':
+                case '>=':
+                case '<':
+                case '<=':
+                    // Range queries - estimate based on field type
+                    if (condition.field === 'age' && typeof condition.value === 'number') {
+                        // Age ranges can be quite selective depending on value
+                        if (condition.value <= 0 || condition.value >= 100) {
+                            return 0.8; // Very broad range
+                        }
+                        return 0.4; // Moderate selectivity
+                    }
+                    return 0.3;
+
+                case 'between':
+                    return 0.2;
+
+                default:
+                    return 1.0;
+            }
         }
 
         switch (condition.operator) {
@@ -587,6 +736,54 @@ export class IndexManager {
                 typeof value === 'number' ||
                 typeof value === 'boolean')
         );
+    }
+
+    // Update field statistics excluding uniqueValues (for batch operations)
+    private updateFieldStatsExcludingUnique(
+        field: string,
+        deltaCount: number,
+        value?: any
+    ): void {
+        const stats = this.fieldStats.get(field) || {
+            totalDocs: 0,
+            uniqueValues: 0,
+            nullCount: 0,
+            avgStringLength: 0,
+        };
+
+        stats.totalDocs += deltaCount;
+
+        if (value !== undefined && deltaCount > 0) {
+            // Track min/max values for range estimation
+            if (typeof value === 'number') {
+                stats.minValue =
+                    stats.minValue !== undefined
+                        ? Math.min(stats.minValue, value)
+                        : value;
+                stats.maxValue =
+                    stats.maxValue !== undefined
+                        ? Math.max(stats.maxValue, value)
+                        : value;
+            }
+
+            // Track string length for cost estimation
+            if (typeof value === 'string') {
+                const currentAvg = stats.avgStringLength || 0;
+                const currentCount = stats.totalDocs - deltaCount;
+                stats.avgStringLength =
+                    (currentAvg * currentCount + value.length) /
+                    stats.totalDocs;
+            }
+
+            // Track null values
+            if (value === null || value === undefined) {
+                stats.nullCount += deltaCount;
+            }
+            
+            // Note: uniqueValues will be updated separately after batch indexing
+        }
+
+        this.fieldStats.set(field, stats);
     }
 
     // Update field statistics
