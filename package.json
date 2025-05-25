@@ -25,6 +25,14 @@
         "clean": "rm -rf dist",
         "prepublishOnly": "bun run clean && bun run build",
         "test": "bun test",
+        "test:bun": "cd bun-tests && bun test",
+        "test:comprehensive": "cd bun-tests && bun run run-tests.ts",
+        "test:table": "cd bun-tests && bun test table.test.ts",
+        "test:query": "cd bun-tests && bun test query.test.ts",
+        "test:storage": "cd bun-tests && bun test storage.test.ts",
+        "test:schema": "cd bun-tests && bun test schema.test.ts",
+        "test:indexing": "cd bun-tests && bun test indexing.test.ts",
+        "test:integration": "cd bun-tests && bun test integration.test.ts",
         "dev": "bun run src/index.ts"
     },
     "keywords": [

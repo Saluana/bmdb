@@ -1,0 +1,4 @@
+[test]
+# Test configuration for Bun
+timeout = 30000
+preload = ["./test-setup.ts"]
