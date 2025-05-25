@@ -143,8 +143,13 @@ export class Document {
     this.docId = docId;
     this.doc_id = docId; // Alias for convenience
     
+    // Filter out any existing ID fields to prevent overwriting
+    const filteredValue = { ...value };
+    delete filteredValue.docId;
+    delete filteredValue.doc_id;
+    
     // Directly assign properties for optimal memory usage
-    Object.assign(this, value);
+    Object.assign(this, filteredValue);
   }
 
   // For JSON serialization - exclude internal properties
@@ -1053,8 +1058,13 @@ export class Table<T extends Record<string, any> = any> {
     // Check if we have a pooled document for this docId
     let doc = this._documentPool.get(docId);
     if (doc) {
+      // Filter out ID fields to prevent overwriting when updating
+      const filteredData = { ...docData };
+      delete filteredData.docId;
+      delete filteredData.doc_id;
+      
       // Update the existing document properties
-      Object.assign(doc, docData);
+      Object.assign(doc, filteredData);
       return doc;
     }
     
