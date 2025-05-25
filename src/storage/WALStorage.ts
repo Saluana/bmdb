@@ -228,6 +228,12 @@ export class WALStorage implements Storage {
     try {
       const batch = this.pendingOperations.splice(0, this.pendingOperations.length);
       const batchContent = batch.map(op => JSON.stringify(op)).join('\n') + '\n';
+      
+      // Ensure WAL file exists before appending
+      if (!existsSync(this.walPath)) {
+        writeFileSync(this.walPath, '', 'utf8');
+      }
+      
       appendFileSync(this.walPath, batchContent, 'utf8');
       
       // Check if we need to auto-compact
@@ -235,7 +241,11 @@ export class WALStorage implements Storage {
       if (currentWALSize >= this.compactThreshold) {
         // Schedule compaction for next tick to avoid blocking
         setImmediate(() => {
-          this.performBackgroundCompaction();
+          try {
+            this.performBackgroundCompaction();
+          } catch (error) {
+            console.warn('Background compaction failed:', error);
+          }
         });
       }
     } catch (error) {
@@ -653,14 +663,26 @@ export class WALStorage implements Storage {
       
       // Atomically replace the old WAL
       if (existsSync(tempWalPath)) {
-        unlinkSync(this.walPath);
+        // Only delete if the temp file exists and rename will succeed
+        if (existsSync(this.walPath)) {
+          unlinkSync(this.walPath);
+        }
         require('fs').renameSync(tempWalPath, this.walPath);
+      } else {
+        // If no temp file was created, ensure WAL file exists
+        if (!existsSync(this.walPath)) {
+          writeFileSync(this.walPath, '', 'utf8');
+        }
       }
       
     } catch (error) {
       // Clean up temp file on error
       if (existsSync(tempWalPath)) {
         unlinkSync(tempWalPath);
+      }
+      // Ensure WAL file exists even if compaction failed
+      if (!existsSync(this.walPath)) {
+        writeFileSync(this.walPath, '', 'utf8');
       }
       throw error;
     }
