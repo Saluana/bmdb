@@ -8,6 +8,16 @@ export interface BmDbFieldMeta {
   isVector?: boolean;
   vectorDimensions?: number;
   vectorSearchAlgorithm?: 'cosine' | 'euclidean' | 'dot' | 'manhattan';
+  relationship?: BmDbRelationship;
+}
+
+export interface BmDbRelationship {
+  type: 'belongsTo' | 'hasMany' | 'hasOne';
+  targetTable: string;
+  foreignKey?: string; // For belongsTo relationships
+  localKey?: string;   // For hasMany/hasOne relationships
+  cascadeDelete?: boolean;
+  cascadeUpdate?: boolean;
 }
 
 export interface BmDbSchemaMeta {

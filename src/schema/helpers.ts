@@ -1,5 +1,5 @@
 import type { ZodType, ZodTypeAny } from 'zod';
-import type { BmDbFieldMeta } from './types';
+import type { BmDbFieldMeta, BmDbRelationship } from './types';
 
 // Use a symbol to attach metadata without corrupting Zod's internal structure
 const BMDB_META_SYMBOL = Symbol('bmdb_field_meta');
@@ -47,5 +47,66 @@ export function vector<T extends ZodTypeAny>(
     isVector: true, 
     vectorDimensions: dimensions,
     vectorSearchAlgorithm: algorithm 
+  });
+}
+
+// Relationship helpers
+export function belongsTo<T extends ZodTypeAny>(
+  schema: T, 
+  targetTable: string, 
+  options: {
+    foreignKey?: string;
+    cascadeDelete?: boolean;
+    cascadeUpdate?: boolean;
+  } = {}
+): T {
+  return withMeta(schema, {
+    relationship: {
+      type: 'belongsTo',
+      targetTable,
+      foreignKey: options.foreignKey,
+      cascadeDelete: options.cascadeDelete ?? false,
+      cascadeUpdate: options.cascadeUpdate ?? false,
+    }
+  });
+}
+
+export function hasMany<T extends ZodTypeAny>(
+  schema: T, 
+  targetTable: string, 
+  options: {
+    localKey?: string;
+    cascadeDelete?: boolean;
+    cascadeUpdate?: boolean;
+  } = {}
+): T {
+  return withMeta(schema, {
+    relationship: {
+      type: 'hasMany',
+      targetTable,
+      localKey: options.localKey,
+      cascadeDelete: options.cascadeDelete ?? true, // Default true for hasMany
+      cascadeUpdate: options.cascadeUpdate ?? false,
+    }
+  });
+}
+
+export function hasOne<T extends ZodTypeAny>(
+  schema: T, 
+  targetTable: string, 
+  options: {
+    localKey?: string;
+    cascadeDelete?: boolean;
+    cascadeUpdate?: boolean;
+  } = {}
+): T {
+  return withMeta(schema, {
+    relationship: {
+      type: 'hasOne',
+      targetTable,
+      localKey: options.localKey,
+      cascadeDelete: options.cascadeDelete ?? true, // Default true for hasOne
+      cascadeUpdate: options.cascadeUpdate ?? false,
+    }
   });
 }

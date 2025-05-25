@@ -239,7 +239,8 @@ export class TinyDB {
                     this._storage,
                     schema,
                     tableName,
-                    options
+                    options,
+                    this
                 );
                 
                 // Copy the existing data
@@ -280,7 +281,8 @@ export class TinyDB {
             this._storage,
             schema,
             tableName,
-            options
+            options,
+            this
         );
         this._tables.set(tableName, table);
         

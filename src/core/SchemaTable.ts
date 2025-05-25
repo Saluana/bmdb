@@ -4,21 +4,63 @@ import { BmDbSchema } from '../schema/BmDbSchema';
 import { createUniqueConstraintError } from '../schema/errors';
 import { VectorUtils, type Vector, type VectorSearchResult } from '../utils/VectorUtils';
 
+interface RelationshipConfig {
+    parentField: string;      // Field in this table that points to parent
+    childTable: string;       // Name of child table
+    childField: string;       // Field in child table that points back to this table
+    cascadeDelete: boolean;   // Whether to delete children when parent is deleted
+}
+
 export class SchemaTable<T extends Record<string, any>> extends Table<T> {
     private _schema: BmDbSchema<T>;
+    private _db?: any; // TinyDB instance for cascade operations
+    private _relationships: RelationshipConfig[] = [];
 
     constructor(
         storage: Storage,
         schema: BmDbSchema<T>,
         name?: string,
-        options: { cacheSize?: number; persistEmpty?: boolean } = {}
+        options: { cacheSize?: number; persistEmpty?: boolean } = {},
+        db?: any
     ) {
         super(storage, name || schema.tableName, options);
         this._schema = schema;
+        this._db = db;
     }
 
     get schema(): BmDbSchema<T> {
         return this._schema;
+    }
+
+    /**
+     * Define a relationship where this table has children in another table
+     * @param parentField - Field in this table that serves as the parent key (usually 'id')
+     * @param childTable - Name of the child table
+     * @param childField - Field in child table that references this table (e.g. 'user_id')
+     * @param cascadeDelete - Whether to delete children when parent is deleted (default: true)
+     */
+    hasMany(parentField: keyof T, childTable: string, childField: string, cascadeDelete: boolean = true): this {
+        this._relationships.push({
+            parentField: parentField as string,
+            childTable,
+            childField,
+            cascadeDelete
+        });
+        return this;
+    }
+
+    /**
+     * Get all relationships defined for this table
+     */
+    getRelationships(): RelationshipConfig[] {
+        return [...this._relationships];
+    }
+
+    /**
+     * Get only relationships that have cascade delete enabled
+     */
+    getCascadeDeleteRelationships(): RelationshipConfig[] {
+        return this._relationships.filter(rel => rel.cascadeDelete);
     }
 
 
@@ -191,6 +233,84 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         this.validateVectorFields(validatedData);
 
         return super.upsert(validatedData, cond);
+    }
+
+    // Override remove to handle cascade deletes
+    remove(cond?: any, docIds?: number[]): number[] {
+        // First get the documents that will be deleted for cascade operations
+        let docsToDelete: any[] = [];
+        
+        if (docIds) {
+            const docs = this.get(undefined, undefined, docIds);
+            docsToDelete = Array.isArray(docs) ? docs : (docs ? [docs] : []);
+        } else if (cond) {
+            docsToDelete = this.search(cond);
+        }
+
+        // Perform cascade deletes BEFORE removing the parent records
+        if (this._db && docsToDelete.length > 0) {
+            this._handleCascadeDeletes(docsToDelete);
+        }
+
+        // Then perform the actual deletion
+        const removedIds = super.remove(cond, docIds);
+
+        return removedIds;
+    }
+
+    // Override truncate to handle cascade deletes for all records
+    truncate(): void {
+        // Get all documents before truncating for cascade operations
+        const allDocs = this._db ? this.all() : [];
+
+        // Handle cascade deletes BEFORE truncating
+        if (this._db && allDocs.length > 0) {
+            this._handleCascadeDeletes(allDocs);
+        }
+
+        // Then perform the actual truncation
+        super.truncate();
+    }
+
+    private _handleCascadeDeletes(deletedDocs: any[]): void {
+        if (!this._db) return;
+
+        const cascadeRelations = this.getCascadeDeleteRelationships();
+        
+        for (const relationship of cascadeRelations) {
+            try {
+                // Get the child table (must be a schema table)
+                const childTable = this._db._tables?.get(relationship.childTable);
+                if (!childTable) {
+                    console.warn(`Child table '${relationship.childTable}' not found for cascade delete`);
+                    continue;
+                }
+
+                // Check if it's a schema table (has the remove method we expect)
+                if (typeof childTable.remove !== 'function') {
+                    console.warn(`Child table '${relationship.childTable}' is not a schema table, skipping cascade`);
+                    continue;
+                }
+
+                for (const parentDoc of deletedDocs) {
+                    const parentValue = parentDoc[relationship.parentField];
+                    if (parentValue === undefined || parentValue === null) continue;
+
+                    // Find all child records that reference this parent
+                    const childrenToDelete = childTable.search((childDoc: any) => 
+                        childDoc[relationship.childField] === parentValue
+                    );
+
+                    if (childrenToDelete.length > 0) {
+                        const childIds = childrenToDelete.map((child: any) => child.doc_id);
+                        childTable.remove(undefined, childIds);
+                        console.log(`Cascade deleted ${childrenToDelete.length} records from ${relationship.childTable}`);
+                    }
+                }
+            } catch (error) {
+                console.warn(`Error during cascade delete for table '${relationship.childTable}':`, error);
+            }
+        }
     }
 
     // Utility methods for schema introspection

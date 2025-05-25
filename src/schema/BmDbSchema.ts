@@ -144,6 +144,32 @@ export class BmDbSchema<T extends Record<string, any>> {
     return field in this.zodShape;
   }
 
+  getRelationships(): Record<string, BmDbFieldMeta['relationship']> {
+    const relationships: Record<string, BmDbFieldMeta['relationship']> = {};
+    
+    for (const field of Object.keys(this.zodShape) as Array<keyof T>) {
+      const meta = this.getFieldMeta(field);
+      if (meta?.relationship) {
+        relationships[field as string] = meta.relationship;
+      }
+    }
+    
+    return relationships;
+  }
+
+  getCascadeDeleteRelationships(): Record<string, BmDbFieldMeta['relationship']> {
+    const relationships = this.getRelationships();
+    const cascadeDeletes: Record<string, BmDbFieldMeta['relationship']> = {};
+    
+    for (const [field, rel] of Object.entries(relationships)) {
+      if (rel && rel.cascadeDelete) {
+        cascadeDeletes[field] = rel;
+      }
+    }
+    
+    return cascadeDeletes;
+  }
+
   clone(newTableName?: string): BmDbSchema<T> {
     return new BmDbSchema(this.zodSchema, newTableName || this.tableName);
   }
