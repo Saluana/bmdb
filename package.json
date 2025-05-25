@@ -1,6 +1,6 @@
 {
     "name": "bmdb",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "description": "High-performance, ACID-compliant embedded database with WAL optimization, MVCC, and vector search capabilities",
     "main": "dist/index.cjs",
     "module": "dist/index.js",

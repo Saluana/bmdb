@@ -40,12 +40,42 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
      * @param cascadeDelete - Whether to delete children when parent is deleted (default: true)
      */
     hasMany(parentField: keyof T, childTable: string, childField: string, cascadeDelete: boolean = true): this {
+        // Validation
+        if (!parentField || typeof parentField !== 'string') {
+            throw new Error(`Invalid parentField '${String(parentField)}' in hasMany relationship`);
+        }
+        if (!childTable || typeof childTable !== 'string' || childTable.trim() === '') {
+            throw new Error(`Invalid childTable '${childTable}' in hasMany relationship`);
+        }
+        if (!childField || typeof childField !== 'string' || childField.trim() === '') {
+            throw new Error(`Invalid childField '${childField}' in hasMany relationship`);
+        }
+        if (childTable === this._schema.tableName) {
+            console.warn(`Self-referencing relationship detected on table '${this._schema.tableName}'.`);
+        }
+
+        // Check for duplicate relationships
+        const existing = this._relationships.find(rel => 
+            rel.parentField === parentField && 
+            rel.childTable === childTable && 
+            rel.childField === childField
+        );
+        if (existing) {
+            // Silently ignore duplicate relationships
+            return this;
+        }
+
         this._relationships.push({
             parentField: parentField as string,
             childTable,
             childField,
             cascadeDelete
         });
+        
+        // Save relationships to persistence
+        this._saveRelationships();
+        
+        console.log(`✓ Relationship defined: ${this._schema.tableName}.${parentField as string} -> ${childTable}.${childField} (cascade: ${cascadeDelete})`);
         return this;
     }
 
@@ -61,6 +91,141 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
      */
     getCascadeDeleteRelationships(): RelationshipConfig[] {
         return this._relationships.filter(rel => rel.cascadeDelete);
+    }
+
+    /**
+     * Find all child records for a given parent record
+     * @param parentId - The ID of the parent record
+     * @param childTable - Name of the child table to search
+     * @returns Array of child records
+     */
+    findChildren(parentId: any, childTable?: string): any[] {
+        if (!this._db) {
+            console.warn('Cannot find children: database instance not available');
+            return [];
+        }
+
+        const results: any[] = [];
+        const relationshipsToCheck = childTable 
+            ? this._relationships.filter(rel => rel.childTable === childTable)
+            : this._relationships;
+
+        for (const rel of relationshipsToCheck) {
+            try {
+                const childTableInstance = this._db._tables?.get(rel.childTable);
+                if (childTableInstance) {
+                    // Use direct iteration instead of search method to avoid potential caching issues
+                    const allRecords = childTableInstance.all();
+                    const children = allRecords.filter((child: any) => 
+                        child[rel.childField] === parentId
+                    );
+                    results.push(...children);
+                }
+            } catch (error) {
+                console.warn(`Error finding children in table '${rel.childTable}':`, error);
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * Count all child records for a given parent record
+     * @param parentId - The ID of the parent record
+     * @param childTable - Optional: specific child table to count
+     * @returns Number of child records
+     */
+    countChildren(parentId: any, childTable?: string): number {
+        return this.findChildren(parentId, childTable).length;
+    }
+
+    /**
+     * Check if a parent record has any children
+     * @param parentId - The ID of the parent record
+     * @param childTable - Optional: specific child table to check
+     * @returns True if parent has children
+     */
+    hasChildren(parentId: any, childTable?: string): boolean {
+        if (!this._db) return false;
+
+        const relationshipsToCheck = childTable 
+            ? this._relationships.filter(rel => rel.childTable === childTable)
+            : this._relationships;
+
+        for (const rel of relationshipsToCheck) {
+            try {
+                const childTableInstance = this._db._tables?.get(rel.childTable);
+                if (childTableInstance) {
+                    // Use direct iteration instead of search method to avoid potential caching issues
+                    const allRecords = childTableInstance.all();
+                    const hasMatch = allRecords.some((child: any) => 
+                        child[rel.childField] === parentId
+                    );
+                    if (hasMatch) return true;
+                }
+            } catch (error) {
+                console.warn(`Error checking children in table '${rel.childTable}':`, error);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Remove a relationship
+     * @param parentField - Parent field name
+     * @param childTable - Child table name
+     * @param childField - Child field name
+     */
+    removeRelationship(parentField: keyof T, childTable: string, childField: string): this {
+        const index = this._relationships.findIndex(rel => 
+            rel.parentField === parentField && 
+            rel.childTable === childTable && 
+            rel.childField === childField
+        );
+        
+        if (index !== -1) {
+            this._relationships.splice(index, 1);
+            this._saveRelationships();
+            console.log(`✓ Removed relationship: ${this._schema.tableName}.${parentField as string} -> ${childTable}.${childField}`);
+        }
+        // Silently ignore attempts to remove non-existent relationships
+        
+        return this;
+    }
+
+    /**
+     * Clear all relationships
+     */
+    clearRelationships(): this {
+        const count = this._relationships.length;
+        this._relationships = [];
+        this._saveRelationships();
+        console.log(`✓ Cleared ${count} relationships from table '${this._schema.tableName}'`);
+        return this;
+    }
+
+    /**
+     * Save relationships to persistence layer
+     */
+    private _saveRelationships(): void {
+        if (this._db && typeof this._db._saveRelationshipsMetadata === 'function') {
+            try {
+                this._db._saveRelationshipsMetadata(this._schema.tableName, this._relationships);
+            } catch (error) {
+                console.warn('Failed to save relationships metadata:', error);
+            }
+        }
+    }
+
+    /**
+     * Load relationships from persistence layer
+     */
+    _loadRelationships(relationships: RelationshipConfig[]): void {
+        if (Array.isArray(relationships)) {
+            this._relationships = [...relationships];
+            console.log(`✓ Loaded ${relationships.length} relationships for table '${this._schema.tableName}'`);
+        }
     }
 
 
@@ -276,39 +441,78 @@ export class SchemaTable<T extends Record<string, any>> extends Table<T> {
         if (!this._db) return;
 
         const cascadeRelations = this.getCascadeDeleteRelationships();
-        
+        if (cascadeRelations.length === 0) return;
+
+        // Group deletions by child table for better performance
+        const deletionsByTable = new Map<string, Map<string, any[]>>();
+
+        // First pass: collect all parent values that need cascade deletion
         for (const relationship of cascadeRelations) {
+            // Skip self-referencing relationships to prevent infinite loops
+            const currentTableName = this._schema.tableName;
+            if (relationship.childTable === currentTableName) {
+                console.warn(`Skipping self-referencing cascade delete for table '${currentTableName}'.`);
+                continue;
+            }
+            
+            if (!deletionsByTable.has(relationship.childTable)) {
+                deletionsByTable.set(relationship.childTable, new Map());
+            }
+            
+            const tableMap = deletionsByTable.get(relationship.childTable)!;
+            if (!tableMap.has(relationship.childField)) {
+                tableMap.set(relationship.childField, []);
+            }
+
+            const parentValues = tableMap.get(relationship.childField)!;
+            for (const parentDoc of deletedDocs) {
+                const parentValue = parentDoc[relationship.parentField];
+                if (parentValue !== undefined && parentValue !== null) {
+                    parentValues.push(parentValue);
+                }
+            }
+        }
+
+        // Second pass: perform batch deletions
+        for (const [childTableName, fieldMap] of deletionsByTable) {
             try {
-                // Get the child table (must be a schema table)
-                const childTable = this._db._tables?.get(relationship.childTable);
+                const childTable = this._db._tables?.get(childTableName);
                 if (!childTable) {
-                    console.warn(`Child table '${relationship.childTable}' not found for cascade delete`);
+                    console.warn(`Child table '${childTableName}' not found for cascade delete`);
                     continue;
                 }
 
-                // Check if it's a schema table (has the remove method we expect)
                 if (typeof childTable.remove !== 'function') {
-                    console.warn(`Child table '${relationship.childTable}' is not a schema table, skipping cascade`);
+                    console.warn(`Child table '${childTableName}' is not a schema table, skipping cascade`);
                     continue;
                 }
 
-                for (const parentDoc of deletedDocs) {
-                    const parentValue = parentDoc[relationship.parentField];
-                    if (parentValue === undefined || parentValue === null) continue;
+                let totalDeleted = 0;
+                for (const [childField, parentValues] of fieldMap) {
+                    if (parentValues.length === 0) continue;
 
-                    // Find all child records that reference this parent
+                    // Use Set for O(1) lookup performance
+                    const parentValueSet = new Set(parentValues);
+                    
+                    // Find all children that match any of the parent values
                     const childrenToDelete = childTable.search((childDoc: any) => 
-                        childDoc[relationship.childField] === parentValue
+                        parentValueSet.has(childDoc[childField])
                     );
 
                     if (childrenToDelete.length > 0) {
                         const childIds = childrenToDelete.map((child: any) => child.doc_id);
+                        
+                        // Use regular remove method which will trigger its own cascades
                         childTable.remove(undefined, childIds);
-                        console.log(`Cascade deleted ${childrenToDelete.length} records from ${relationship.childTable}`);
+                        totalDeleted += childrenToDelete.length;
                     }
                 }
+
+                if (totalDeleted > 0) {
+                    console.log(`Cascade deleted ${totalDeleted} records from ${childTableName}`);
+                }
             } catch (error) {
-                console.warn(`Error during cascade delete for table '${relationship.childTable}':`, error);
+                console.warn(`Error during cascade delete for table '${childTableName}':`, error);
             }
         }
     }

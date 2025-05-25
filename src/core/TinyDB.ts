@@ -108,6 +108,7 @@ export class TinyDB {
                             table._loadData(tableData as Record<string, any>);
                             // Mark this table as requiring schema restoration
                             (table as any)._requiresSchemaRestoration = metadata;
+                            (table as any)._relationshipsToRestore = metadata.relationships || [];
                         } else {
                             // Regular table
                             table = new TinyDB.tableClass(this._storage, name);
@@ -161,11 +162,12 @@ export class TinyDB {
         return this._tables.get(TinyDB.schemaMetadataTableName)!;
     }
 
-    private _saveSchemaMetadata(tableName: string, schema: BmDbSchema<any>): void {
+    private _saveSchemaMetadata(tableName: string, schema: BmDbSchema<any>, relationships?: any[]): void {
         const metadataTable = this._getSchemaMetadataTable();
         const metadata = {
             tableName,
-            schemaDefinition: schema.serialize(), // We'll need to add this method to BmDbSchema
+            schemaDefinition: schema.serialize(),
+            relationships: relationships || [], // Store relationships separately
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
         };
@@ -177,6 +179,27 @@ export class TinyDB {
         }
         
         metadataTable.insert(metadata);
+    }
+
+    /**
+     * Save relationships for a schema table to persist across restarts
+     */
+    _saveRelationshipsMetadata(tableName: string, relationships: any[]): void {
+        const metadataTable = this._getSchemaMetadataTable();
+        
+        // Find existing metadata
+        const existingDocs = metadataTable.search((doc: any) => doc.tableName === tableName);
+        if (existingDocs.length > 0) {
+            // Update existing metadata with relationships
+            const existingDoc = existingDocs[0];
+            metadataTable.update(
+                { relationships, updatedAt: new Date().toISOString() },
+                (doc: any) => doc.tableName === tableName
+            );
+        } else {
+            // Create new metadata entry
+            this._saveSchemaMetadata(tableName, { serialize: () => ({}) } as any, relationships);
+        }
     }
 
     private _removeSchemaMetadata(tableName: string): void {
@@ -266,8 +289,14 @@ export class TinyDB {
                 // Replace the table in our map
                 this._tables.set(tableName, schemaTable);
                 
-                // Save schema metadata
-                this._saveSchemaMetadata(tableName, schema);
+                // Load relationships if they were saved
+                const relationshipsToRestore = (existing as any)._relationshipsToRestore;
+                if (relationshipsToRestore && Array.isArray(relationshipsToRestore)) {
+                    schemaTable._loadRelationships(relationshipsToRestore);
+                }
+                
+                // Save schema metadata (preserve relationships)
+                this._saveSchemaMetadata(tableName, schema, relationshipsToRestore);
                 
                 return schemaTable;
             }
