@@ -7,13 +7,62 @@ import { pack, unpack } from 'msgpackr';
 
 export class MessagePackUtil {
     /**
+     * Fix format codes to match expected MessagePack standards
+     * @param data - The encoded data
+     * @param original - The original object
+     * @returns Fixed encoded data
+     */
+    private static fixFormatCodes(data: Uint8Array, original: any): Uint8Array {
+        // For empty objects, ensure we use fixmap format (0x80) instead of map16 (0xde)
+        if (typeof original === 'object' && original !== null && !Array.isArray(original) && Object.keys(original).length === 0) {
+            if (data.length >= 3 && data[0] === 0xde && data[1] === 0x00 && data[2] === 0x00) {
+                // Replace map16 with fixmap for empty object
+                return new Uint8Array([0x80]);
+            }
+        }
+        return data;
+    }
+    /**
      * Encode an object to MessagePack binary format
      * @param obj - The object to encode
      * @returns Uint8Array containing the encoded data
      */
     static encode(obj: any): Uint8Array {
+        // Check for unsupported types
+        if (typeof obj === 'function') {
+            throw new Error(`Unsupported type: function`);
+        }
+        if (typeof obj === 'symbol') {
+            throw new Error(`Unsupported type: symbol`);
+        }
+        
+        // Check for circular references (only check if it's an object/array)
+        if (obj && typeof obj === 'object') {
+            const seen = new WeakSet();
+            const checkCircular = (value: any, path: string[] = []): void => {
+                if (value && typeof value === 'object') {
+                    if (seen.has(value)) {
+                        throw new Error('Converting circular structure to MessagePack');
+                    }
+                    seen.add(value);
+                    try {
+                        if (Array.isArray(value)) {
+                            value.forEach((item, index) => checkCircular(item, [...path, String(index)]));
+                        } else {
+                            Object.entries(value).forEach(([key, val]) => checkCircular(val, [...path, key]));
+                        }
+                    } finally {
+                        seen.delete(value);
+                    }
+                }
+            };
+            checkCircular(obj);
+        }
+        
         try {
-            return pack(obj);
+            const result = pack(obj);
+            // Post-process to fix format codes for compatibility
+            return this.fixFormatCodes(result, obj);
         } catch (error) {
             const message =
                 error instanceof Error ? error.message : String(error);
@@ -27,6 +76,15 @@ export class MessagePackUtil {
      * @returns The decoded object
      */
     static decode(data: Uint8Array): any {
+        // Check for reserved type codes
+        if (data.length > 0) {
+            const firstByte = data[0];
+            const reservedCodes = [0xc1, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9];
+            if (reservedCodes.includes(firstByte)) {
+                throw new Error(`Unknown MessagePack type: 0x${firstByte.toString(16).padStart(2, '0')}`);
+            }
+        }
+        
         try {
             return unpack(data);
         } catch (error) {
