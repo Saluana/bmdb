@@ -12,16 +12,7 @@ import {
     type VectorIndex,
 } from '../utils/VectorUtils';
 import { MessagePackUtil } from '../utils/MessagePackUtil';
-import {
-    existsSync,
-    readFileSync,
-    writeFileSync,
-    openSync,
-    closeSync,
-    unlinkSync,
-    statSync,
-} from 'fs';
-import { promises as fs } from 'fs';
+import { FileSystem } from '../utils/FileSystem';
 
 /**
  * High-performance JSON storage that prioritizes speed over frequent durability.
@@ -86,10 +77,10 @@ export class JSONStorage implements Storage {
 
     private initializeStorage(): void {
         // Load existing data into memory
-        if (existsSync(this.path)) {
+        if (FileSystem.exists(this.path)) {
             try {
                 if (this.useMsgPack) {
-                    const rawData = readFileSync(this.path);
+                    const rawData = FileSystem.readSync(this.path) as Buffer;
                     if (rawData && rawData.length > 0) {
                         this.memoryData =
                             (MessagePackUtil.decode(
@@ -97,7 +88,7 @@ export class JSONStorage implements Storage {
                             ) as JsonObject) || {};
                     }
                 } else {
-                    const raw = readFileSync(this.path, 'utf-8');
+                    const raw = FileSystem.readSync(this.path, 'utf-8') as string;
                     if (raw && raw.trim() !== '') {
                         this.memoryData = (JSON.parse(raw) as JsonObject) || {};
                     }
@@ -112,11 +103,11 @@ export class JSONStorage implements Storage {
         }
 
         // Create index file if it doesn't exist
-        if (!existsSync(this.indexPath)) {
+        if (!FileSystem.exists(this.indexPath)) {
             if (this.useMsgPack) {
-                writeFileSync(this.indexPath, MessagePackUtil.encode({}));
+                FileSystem.writeSync(this.indexPath, MessagePackUtil.encode({}));
             } else {
-                writeFileSync(this.indexPath, '{}');
+                FileSystem.writeSync(this.indexPath, '{}');
             }
         }
     }
@@ -139,10 +130,10 @@ export class JSONStorage implements Storage {
 
             if (this.useMsgPack) {
                 const data = MessagePackUtil.encode(frozen);
-                await fs.writeFile(this.path, data).catch(console.error);
+                await FileSystem.write(this.path, data).catch(console.error);
             } else {
-                await fs
-                    .writeFile(this.path, JSON.stringify(frozen, null, 0))
+                await FileSystem
+                    .write(this.path, JSON.stringify(frozen, null, 0))
                     .catch(console.error);
             }
 
@@ -165,9 +156,9 @@ export class JSONStorage implements Storage {
 
             if (this.useMsgPack) {
                 const data = MessagePackUtil.encode(frozen);
-                writeFileSync(this.path, data);
+                FileSystem.writeSync(this.path, data);
             } else {
-                writeFileSync(this.path, JSON.stringify(frozen, null, 0));
+                FileSystem.writeSync(this.path, JSON.stringify(frozen, null, 0));
             }
 
             this.isDirty = false;
@@ -297,7 +288,7 @@ export class JSONStorage implements Storage {
         }
 
         if (this.lockFd !== null) {
-            closeSync(this.lockFd);
+            FileSystem.closeSync(this.lockFd);
             this.lockFd = null;
         }
     }
@@ -555,21 +546,21 @@ export class JSONStorage implements Storage {
         let attempts = 0;
         const maxAttempts = 100;
 
-        while (existsSync(lockFile) && attempts < maxAttempts) {
+        while (FileSystem.exists(lockFile) && attempts < maxAttempts) {
             try {
-                const lockContent = readFileSync(lockFile, 'utf-8');
+                const lockContent = FileSystem.readSync(lockFile, 'utf-8') as string;
                 const lockPid = parseInt(lockContent);
 
                 if (lockPid === process.pid) {
-                    unlinkSync(lockFile);
+                    FileSystem.unlinkSync(lockFile);
                     break;
                 }
 
-                const stats = statSync(lockFile);
+                const stats = FileSystem.statSync(lockFile);
                 const lockAge = Date.now() - stats.mtime.getTime();
                 if (lockAge > 5000) {
                     console.warn('Removing stale lock file');
-                    unlinkSync(lockFile);
+                    FileSystem.unlinkSync(lockFile);
                     break;
                 }
             } catch {
@@ -585,7 +576,7 @@ export class JSONStorage implements Storage {
         }
 
         try {
-            writeFileSync(lockFile, process.pid.toString());
+            FileSystem.writeSync(lockFile, process.pid.toString());
             this.writeLocked = true;
         } catch (error) {
             throw new Error(`Failed to acquire write lock: ${error}`);
@@ -595,15 +586,46 @@ export class JSONStorage implements Storage {
     async releaseWriteLock(): Promise<void> {
         if (!this.writeLocked) return;
 
-        try {
-            const lockFile = this.path + '.write.lock';
-            if (existsSync(lockFile)) {
-                unlinkSync(lockFile);
-            }
-        } catch (error) {
-            console.warn('Failed to remove write lock file:', error);
-        }
+        const lockFile = this.path + '.write.lock';
+        this.cleanupLockFile(lockFile);
         this.writeLocked = false;
+    }
+
+    private cleanupLockFile(lockPath: string): void {
+        const maxRetries = 3;
+        let retries = 0;
+        
+        while (retries < maxRetries) {
+            try {
+                if (FileSystem.exists(lockPath)) {
+                    FileSystem.unlinkSync(lockPath);
+                    return; // Success
+                }
+                return; // File doesn't exist, nothing to clean
+            } catch (error) {
+                retries++;
+                
+                if (retries >= maxRetries) {
+                    console.warn(`Failed to cleanup lock file ${lockPath} after ${maxRetries} attempts:`, error);
+                    
+                    // Mark the lock file for cleanup on next startup if possible
+                    try {
+                        const staleMarkerPath = `${lockPath}.stale`;
+                        FileSystem.writeSync(staleMarkerPath, Date.now().toString());
+                    } catch {
+                        // If we can't even write a stale marker, the filesystem has serious issues
+                    }
+                    return;
+                }
+                
+                // Brief delay before retry
+                const delay = 50 * retries; // 50ms, 100ms, 150ms
+                const start = Date.now();
+                while (Date.now() - start < delay) {
+                    // Busy wait for very short delay
+                }
+            }
+        }
     }
 
     async acquireReadLock(): Promise<void> {
@@ -616,9 +638,9 @@ export class JSONStorage implements Storage {
         let attempts = 0;
         const maxAttempts = 100;
 
-        while (existsSync(lockFile) && attempts < maxAttempts) {
+        while (FileSystem.exists(lockFile) && attempts < maxAttempts) {
             try {
-                const lockContent = readFileSync(lockFile, 'utf-8');
+                const lockContent = FileSystem.readSync(lockFile, 'utf-8') as string;
                 const lockPid = parseInt(lockContent);
                 if (lockPid === process.pid) {
                     break;
@@ -646,13 +668,13 @@ export class JSONStorage implements Storage {
     private readIndexes(): Record<string, IndexDefinition> {
         try {
             if (this.useMsgPack) {
-                const data = readFileSync(this.indexPath);
+                const data = FileSystem.readSync(this.indexPath) as Buffer;
                 if (!data || data.length === 0) {
                     return {};
                 }
                 return MessagePackUtil.decode(new Uint8Array(data)) || {};
             } else {
-                const raw = readFileSync(this.indexPath, 'utf-8');
+                const raw = FileSystem.readSync(this.indexPath, 'utf-8') as string;
                 return JSON.parse(raw) || {};
             }
         } catch {
@@ -665,10 +687,10 @@ export class JSONStorage implements Storage {
     ): Promise<void> {
         if (this.useMsgPack) {
             const data = MessagePackUtil.encode(indexes);
-            await fs.writeFile(this.indexPath, data).catch(console.error);
+            await FileSystem.write(this.indexPath, data).catch(console.error);
         } else {
-            await fs
-                .writeFile(this.indexPath, JSON.stringify(indexes, null, 0))
+            await FileSystem
+                .write(this.indexPath, JSON.stringify(indexes, null, 0))
                 .catch(console.error);
         }
     }

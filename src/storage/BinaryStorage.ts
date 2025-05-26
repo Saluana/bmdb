@@ -19,17 +19,7 @@ import type { JsonObject } from '../utils/types';
 import type { Vector, VectorSearchResult } from '../utils/VectorUtils';
 import { MessagePackUtil } from '../utils/MessagePackUtil';
 import { BTree, type BTreeEntry } from '../utils/BTree';
-import {
-    existsSync,
-    openSync,
-    closeSync,
-    readSync,
-    writeSync,
-    fstatSync,
-    ftruncateSync,
-    copyFileSync,
-    unlinkSync,
-} from 'fs';
+import { FileSystem } from '../utils/FileSystem';
 
 const MAGIC_NUMBER = 0x424d4442; // "BMDB"
 const FORMAT_VERSION = 1;
@@ -148,7 +138,7 @@ export class BinaryStorage implements Storage {
 
         try {
             for (const write of this.pendingWrites) {
-                const bytesWritten = writeSync(
+                const bytesWritten = FileSystem.writeSyncFd(
                     this.fd,
                     write.data,
                     0,
@@ -175,7 +165,7 @@ export class BinaryStorage implements Storage {
 
             // Get all entries from B-tree
             const entries = this.btree.getAllEntries();
-            console.log(`[DEBUG] B-tree returned ${entries.length} entries`);
+
             if (entries.length === 0) return null;
 
             const result: JsonObject = {};
@@ -185,8 +175,7 @@ export class BinaryStorage implements Storage {
 
             for (let i = 0; i < entries.length; i++) {
                 const entry = entries[i];
-                console.log(`[DEBUG] Entry ${i}: key="${entry.key}", offset=${entry.offset}, length=${entry.length}`);
-                
+
                 const [tableName, docId] = this.parseEntryKey(entry.key);
                 const documentData = this.readDocumentData(
                     entry.offset,
@@ -257,7 +246,7 @@ export class BinaryStorage implements Storage {
             this.fd = -1; // Mark as closed immediately to prevent double-close
 
             try {
-                closeSync(fdToClose);
+                FileSystem.closeSync(fdToClose);
             } catch (error) {
                 console.error(
                     `Error closing file ${this.path} (fd: ${fdToClose}):`,
@@ -282,11 +271,9 @@ export class BinaryStorage implements Storage {
     writeDocument(tableName: string, docId: string, document: any): void {
         const key = this.createEntryKey(tableName, docId);
         const data = MessagePackUtil.encode(document);
-        console.log(`[DEBUG] writeDocument: key="${key}", serialized size=${data.length}`);
 
         // Find space for document
         const offset = this.allocateDocumentSpace(data.length);
-        console.log(`[DEBUG] allocated space at offset=${offset}, length=${data.length}`);
 
         // Schedule document data write using batch system
         this.scheduleBatchWrite(offset, Buffer.from(data));
@@ -298,7 +285,6 @@ export class BinaryStorage implements Storage {
             length: data.length,
         };
 
-        console.log(`[DEBUG] inserting B-tree entry: key="${entry.key}", offset=${entry.offset}, length=${entry.length}`);
         this.btree.insert(entry);
         this.header.documentCount++;
 
@@ -324,11 +310,11 @@ export class BinaryStorage implements Storage {
     }
 
     private initializeFile(): void {
-        if (existsSync(this.path)) {
+        if (FileSystem.exists(this.path)) {
             // Open existing file
             try {
-                this.fd = openSync(this.path, 'r+');
-                this.fileSize = fstatSync(this.fd).size;
+                this.fd = FileSystem.openSync(this.path, 'r+');
+                this.fileSize = FileSystem.fstatSync(this.fd).size;
             } catch (error) {
                 throw new Error(
                     `Failed to open existing file '${this.path}': ${
@@ -361,7 +347,7 @@ export class BinaryStorage implements Storage {
         } else {
             // Create new file
             try {
-                this.fd = openSync(this.path, 'w+');
+                this.fd = FileSystem.openSync(this.path, 'w+');
                 this.createNewFile();
             } catch (error) {
                 throw new Error(
@@ -396,7 +382,13 @@ export class BinaryStorage implements Storage {
     private readHeader(): void {
         const buffer = Buffer.alloc(HEADER_SIZE);
         try {
-            const bytesRead = readSync(this.fd, buffer, 0, HEADER_SIZE, 0);
+            const bytesRead = FileSystem.readSyncFd(
+                this.fd,
+                buffer,
+                0,
+                HEADER_SIZE,
+                0
+            );
             if (bytesRead !== HEADER_SIZE) {
                 throw new Error(
                     `Expected to read ${HEADER_SIZE} bytes for header, but got ${bytesRead}`
@@ -446,7 +438,13 @@ export class BinaryStorage implements Storage {
         view.setUint32(28, this.header.reserved2, false);
 
         try {
-            const bytesWritten = writeSync(this.fd, buffer, 0, HEADER_SIZE, 0);
+            const bytesWritten = FileSystem.writeSyncFd(
+                this.fd,
+                buffer,
+                0,
+                HEADER_SIZE,
+                0
+            );
             if (bytesWritten !== HEADER_SIZE) {
                 throw new Error(
                     `Expected to write ${HEADER_SIZE} bytes for header, but wrote ${bytesWritten}`
@@ -467,7 +465,13 @@ export class BinaryStorage implements Storage {
         } else {
             const buffer = Buffer.alloc(1024); // BTreeNode.NODE_SIZE
             try {
-                const bytesRead = readSync(this.fd, buffer, 0, 1024, offset);
+                const bytesRead = FileSystem.readSyncFd(
+                    this.fd,
+                    buffer,
+                    0,
+                    1024,
+                    offset
+                );
                 if (bytesRead !== 1024) {
                     throw new Error(
                         `Expected to read 1024 bytes, but got ${bytesRead}`
@@ -499,7 +503,7 @@ export class BinaryStorage implements Storage {
                 if (requiredSize > this.fileSize) {
                     // Extend file size
                     const padding = Buffer.alloc(requiredSize - this.fileSize);
-                    const paddingWritten = writeSync(
+                    const paddingWritten = FileSystem.writeSyncFd(
                         this.fd,
                         padding,
                         0,
@@ -515,7 +519,7 @@ export class BinaryStorage implements Storage {
                 }
 
                 const buffer = Buffer.from(data);
-                const bytesWritten = writeSync(
+                const bytesWritten = FileSystem.writeSyncFd(
                     this.fd,
                     buffer,
                     0,
@@ -543,22 +547,29 @@ export class BinaryStorage implements Storage {
     }
 
     private readDocumentData(offset: number, length: number): any {
-        // Add comprehensive debugging for all reads
-        console.log(`[DEBUG] readDocumentData called: offset=${offset}, length=${length}, fileSize=${this.fileSize}`);
-        
         // Validate parameters
         if (offset < 0 || length <= 0) {
-            throw new Error(`Invalid read parameters: offset=${offset}, length=${length}`);
+            throw new Error(
+                `Invalid read parameters: offset=${offset}, length=${length}`
+            );
         }
-        
+
         if (offset + length > this.fileSize) {
-            throw new Error(`Read would exceed file size: offset=${offset}, length=${length}, fileSize=${this.fileSize}, required=${offset + length}`);
+            throw new Error(
+                `Read would exceed file size: offset=${offset}, length=${length}, fileSize=${
+                    this.fileSize
+                }, required=${offset + length}`
+            );
         }
 
         const buffer = Buffer.alloc(length);
-        const bytesRead = readSync(this.fd, buffer, 0, length, offset);
-
-        console.log(`[DEBUG] readSync result: requested=${length}, actual=${bytesRead}`);
+        const bytesRead = FileSystem.readSyncFd(
+            this.fd,
+            buffer,
+            0,
+            length,
+            offset
+        );
 
         if (bytesRead !== length) {
             throw new Error(
@@ -567,22 +578,25 @@ export class BinaryStorage implements Storage {
         }
 
         const data = new Uint8Array(buffer);
-        
+
         // Show first few bytes for debugging
         const firstBytes = Array.from(data.slice(0, Math.min(20, data.length)))
-            .map(b => `0x${b.toString(16).padStart(2, '0')}`)
+            .map((b) => `0x${b.toString(16).padStart(2, '0')}`)
             .join(' ');
-        console.log(`[DEBUG] First ${Math.min(20, data.length)} bytes: ${firstBytes}`);
-        
+
         // Add validation for suspicious patterns
         if (data.length !== length) {
-            console.log(`[WARNING] Buffer length mismatch: expected ${length}, got ${data.length}`);
+            console.log(
+                `[WARNING] Buffer length mismatch: expected ${length}, got ${data.length}`
+            );
         }
-        
+
         try {
             return MessagePackUtil.decode(data);
         } catch (error) {
-            console.log(`[ERROR] MessagePack decode failed for offset=${offset}, length=${length}`);
+            console.log(
+                `[ERROR] MessagePack decode failed for offset=${offset}, length=${length}`
+            );
             console.log(`[ERROR] Data preview: ${firstBytes}`);
             throw error;
         }
@@ -605,7 +619,7 @@ export class BinaryStorage implements Storage {
         if (requiredSize > this.fileSize) {
             try {
                 const padding = Buffer.alloc(requiredSize - this.fileSize);
-                const bytesWritten = writeSync(
+                const bytesWritten = FileSystem.writeSyncFd(
                     this.fd,
                     padding,
                     0,
@@ -704,7 +718,7 @@ export class BinaryStorage implements Storage {
         try {
             // 1. Create backup of the current file
             try {
-                copyFileSync(this.path, backupPath);
+                FileSystem.copyFileSync(this.path, backupPath);
                 backupCreated = true;
             } catch (error) {
                 throw new Error(
@@ -720,8 +734,8 @@ export class BinaryStorage implements Storage {
                 // No documents to compact, just reset free space
                 this.resetToMinimalSize();
                 // Clean up backup on success
-                if (backupCreated && existsSync(backupPath)) {
-                    unlinkSync(backupPath);
+                if (backupCreated && FileSystem.exists(backupPath)) {
+                    FileSystem.unlinkSync(backupPath);
                 }
                 return;
             }
@@ -784,7 +798,7 @@ export class BinaryStorage implements Storage {
                 const requiredSize = currentOffset + serializedData.length;
                 if (requiredSize > this.fileSize) {
                     const padding = Buffer.alloc(requiredSize - this.fileSize);
-                    writeSync(
+                    FileSystem.writeSyncFd(
                         this.fd,
                         padding,
                         0,
@@ -796,7 +810,7 @@ export class BinaryStorage implements Storage {
 
                 // Write document data
                 const buffer = Buffer.from(serializedData);
-                writeSync(
+                FileSystem.writeSyncFd(
                     this.fd,
                     buffer,
                     0,
@@ -840,8 +854,8 @@ export class BinaryStorage implements Storage {
             this.btree.clearCache();
 
             // 13. Clean up backup on success
-            if (backupCreated && existsSync(backupPath)) {
-                unlinkSync(backupPath);
+            if (backupCreated && FileSystem.exists(backupPath)) {
+                FileSystem.unlinkSync(backupPath);
             }
 
             console.log(
@@ -851,17 +865,17 @@ export class BinaryStorage implements Storage {
             console.error('Error during file compaction:', error);
 
             // Rollback to backup if compaction failed
-            if (backupCreated && existsSync(backupPath)) {
+            if (backupCreated && FileSystem.exists(backupPath)) {
                 try {
                     // Close current file
-                    closeSync(this.fd);
+                    FileSystem.closeSync(this.fd);
 
                     // Restore from backup
-                    copyFileSync(backupPath, this.path);
+                    FileSystem.copyFileSync(backupPath, this.path);
 
                     // Reopen file
-                    this.fd = openSync(this.path, 'r+');
-                    this.fileSize = fstatSync(this.fd).size;
+                    this.fd = FileSystem.openSync(this.path, 'r+');
+                    this.fileSize = FileSystem.fstatSync(this.fd).size;
 
                     // Reload header
                     this.readHeader();
@@ -877,7 +891,7 @@ export class BinaryStorage implements Storage {
                     this.btree.setNextNodeOffset(this.header.nextNodeOffset);
 
                     // Clean up backup
-                    unlinkSync(backupPath);
+                    FileSystem.unlinkSync(backupPath);
 
                     console.log(
                         'Successfully rolled back to backup after compaction failure.'
@@ -955,7 +969,7 @@ export class BinaryStorage implements Storage {
 
     private truncateFile(newSize: number): void {
         try {
-            ftruncateSync(this.fd, newSize);
+            FileSystem.ftruncateSync(this.fd, newSize);
             this.fileSize = newSize;
         } catch (error) {
             console.warn('File truncation failed:', error);
@@ -1110,7 +1124,13 @@ export class BinaryStorage implements Storage {
 
         if (size > 0 && this.fd !== -1) {
             try {
-                const bytesRead = readSync(this.fd, buffer, 0, size, offset);
+                const bytesRead = FileSystem.readSyncFd(
+                    this.fd,
+                    buffer,
+                    0,
+                    size,
+                    offset
+                );
                 if (bytesRead !== size) {
                     console.warn(
                         `Expected to read ${size} bytes, but got ${bytesRead} for chunk ${chunkKey}`
@@ -1159,7 +1179,7 @@ export class BinaryStorage implements Storage {
                 this.fileSize - chunk.offset
             );
             if (actualSize > 0) {
-                const bytesWritten = writeSync(
+                const bytesWritten = FileSystem.writeSyncFd(
                     this.fd,
                     chunk.buffer,
                     0,
@@ -1205,7 +1225,13 @@ export class BinaryStorage implements Storage {
         // Multi-chunk read or large read - fallback to direct file access
         const buffer = Buffer.alloc(length);
         try {
-            const bytesRead = readSync(this.fd, buffer, 0, length, offset);
+            const bytesRead = FileSystem.readSyncFd(
+                this.fd,
+                buffer,
+                0,
+                length,
+                offset
+            );
             if (bytesRead !== length) {
                 throw new Error(
                     `Expected to read ${length} bytes, but got ${bytesRead}`
@@ -1246,7 +1272,7 @@ export class BinaryStorage implements Storage {
         // Multi-chunk write or large write - fallback to direct file access
         try {
             const buffer = Buffer.from(data);
-            const bytesWritten = writeSync(
+            const bytesWritten = FileSystem.writeSyncFd(
                 this.fd,
                 buffer,
                 0,
@@ -1277,7 +1303,7 @@ export class BinaryStorage implements Storage {
     private extendFile(newSize: number): void {
         try {
             const padding = Buffer.alloc(newSize - this.fileSize);
-            const bytesWritten = writeSync(
+            const bytesWritten = FileSystem.writeSyncFd(
                 this.fd,
                 padding,
                 0,

@@ -1,7 +1,7 @@
 import { WALStorage } from "./WALStorage";
 import { deepFreeze } from "../utils/freeze";
 import type { JsonObject } from "../utils/types";
-import { existsSync, writeFileSync } from "fs";
+import { FileSystem } from "../utils/FileSystem";
 
 // Efficient deep clone without JSON serialization overhead
 function deepClone(obj: any): any {
@@ -28,8 +28,8 @@ export class WALJSONStorage extends WALStorage {
     this.indent = opts.indent ?? 0;
     
     // Initialize main data file if it doesn't exist
-    if (!existsSync(path)) {
-      writeFileSync(path, "{}\n");
+    if (!FileSystem.exists(path)) {
+      FileSystem.writeSync(path, "{}\n");
     }
   }
 
@@ -60,7 +60,7 @@ export class WALJSONStorage extends WALStorage {
       const copy = deepClone(currentData);
       const frozen = deepFreeze(copy);
       const dataPath = (this as any).dataPath; // Access private field
-      writeFileSync(dataPath, JSON.stringify(frozen, null, this.indent));
+      FileSystem.writeSync(dataPath, JSON.stringify(frozen, null, this.indent));
     }
   }
 }

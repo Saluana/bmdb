@@ -6,7 +6,8 @@ import type {
 import type { JsonObject } from '../utils/types';
 import type { Vector, VectorSearchResult } from '../utils/VectorUtils';
 import { MessagePackUtil } from '../utils/MessagePackUtil';
-import { createReadStream, createWriteStream, existsSync } from 'fs';
+import { createReadStream, createWriteStream } from 'fs';
+import { FileSystem } from '../utils/FileSystem';
 import { Transform, Readable, Writable } from 'stream';
 import { pipeline } from 'stream/promises';
 
@@ -56,12 +57,12 @@ export class StreamingStorage implements Storage {
         );
 
         const dataPath = `${this.basePath}.stream.data`;
-        if (!existsSync(dataPath)) {
+        if (!FileSystem.exists(dataPath)) {
             return null;
         }
 
         try {
-            const data = require('fs').readFileSync(dataPath);
+            const data = FileSystem.readSync(dataPath) as Buffer;
             return MessagePackUtil.decode(new Uint8Array(data)) as JsonObject;
         } catch (error) {
             console.error('Failed to read streaming storage:', error);
@@ -79,7 +80,7 @@ export class StreamingStorage implements Storage {
         const dataPath = `${this.basePath}.stream.data`;
         try {
             const data = MessagePackUtil.encode(obj);
-            require('fs').writeFileSync(dataPath, data);
+            FileSystem.writeSync(dataPath, data);
         } catch (error) {
             throw new Error(
                 `Failed to write streaming storage: ${
@@ -102,7 +103,7 @@ export class StreamingStorage implements Storage {
         filter?: (tableName: string, docId: string, doc: any) => boolean
     ): AsyncGenerator<DocumentStream, void, unknown> {
         const dataPath = `${this.basePath}.stream.data`;
-        if (!existsSync(dataPath)) {
+        if (!FileSystem.exists(dataPath)) {
             return;
         }
 
@@ -269,7 +270,7 @@ export class StreamingStorage implements Storage {
             // Read existing data in streaming fashion
             const existingData: Record<string, Record<string, any>> = {};
 
-            if (existsSync(dataPath)) {
+            if (FileSystem.exists(dataPath)) {
                 for await (const {
                     tableName,
                     docId,
@@ -325,12 +326,12 @@ export class StreamingStorage implements Storage {
             await this.closeWriteStream(writeStream);
 
             // Atomic rename
-            require('fs').renameSync(tempPath, dataPath);
+            FileSystem.renameSync(tempPath, dataPath);
         } finally {
             this.isStreaming = false;
             // Cleanup temp file if it exists
-            if (existsSync(tempPath)) {
-                require('fs').unlinkSync(tempPath);
+            if (FileSystem.exists(tempPath)) {
+                FileSystem.unlinkSync(tempPath);
             }
         }
 
