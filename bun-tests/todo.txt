@@ -1,0 +1,8 @@
+Suggested Bottleneck Tests:
+
+BinaryStorage Profiling: Test BinaryStorage with larger datasets (e.g., 50k, 100k docs) to see if the slowdown is linear or worse.
+Write vs. Read Scaling: For each storage, plot write and read times for 1k, 10k, 50k, 100k docs.
+Concurrent Access: Test concurrent reads/writes for WALStorage and BinaryStorage to see if locking or batching is a bottleneck.
+Indexing/Query Performance: Implement real index creation and indexed search (not just simulated) for storages that support it, and compare to full scan.
+Durability/Flush Overhead: For WALStorage and JSONStorage, test performance with/without forced flushes or syncs to disk.
+Batch Writes: Test performance of many small writes vs. one large batch write.

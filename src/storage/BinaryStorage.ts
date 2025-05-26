@@ -175,6 +175,7 @@ export class BinaryStorage implements Storage {
 
             // Get all entries from B-tree
             const entries = this.btree.getAllEntries();
+            console.log(`[DEBUG] B-tree returned ${entries.length} entries`);
             if (entries.length === 0) return null;
 
             const result: JsonObject = {};
@@ -182,7 +183,10 @@ export class BinaryStorage implements Storage {
             // Read each table's documents
             const tableMap = new Map<string, Record<string, any>>();
 
-            for (const entry of entries) {
+            for (let i = 0; i < entries.length; i++) {
+                const entry = entries[i];
+                console.log(`[DEBUG] Entry ${i}: key="${entry.key}", offset=${entry.offset}, length=${entry.length}`);
+                
                 const [tableName, docId] = this.parseEntryKey(entry.key);
                 const documentData = this.readDocumentData(
                     entry.offset,
@@ -278,9 +282,11 @@ export class BinaryStorage implements Storage {
     writeDocument(tableName: string, docId: string, document: any): void {
         const key = this.createEntryKey(tableName, docId);
         const data = MessagePackUtil.encode(document);
+        console.log(`[DEBUG] writeDocument: key="${key}", serialized size=${data.length}`);
 
         // Find space for document
         const offset = this.allocateDocumentSpace(data.length);
+        console.log(`[DEBUG] allocated space at offset=${offset}, length=${data.length}`);
 
         // Schedule document data write using batch system
         this.scheduleBatchWrite(offset, Buffer.from(data));
@@ -292,6 +298,7 @@ export class BinaryStorage implements Storage {
             length: data.length,
         };
 
+        console.log(`[DEBUG] inserting B-tree entry: key="${entry.key}", offset=${entry.offset}, length=${entry.length}`);
         this.btree.insert(entry);
         this.header.documentCount++;
 
@@ -536,17 +543,49 @@ export class BinaryStorage implements Storage {
     }
 
     private readDocumentData(offset: number, length: number): any {
+        // Add comprehensive debugging for all reads
+        console.log(`[DEBUG] readDocumentData called: offset=${offset}, length=${length}, fileSize=${this.fileSize}`);
+        
+        // Validate parameters
+        if (offset < 0 || length <= 0) {
+            throw new Error(`Invalid read parameters: offset=${offset}, length=${length}`);
+        }
+        
+        if (offset + length > this.fileSize) {
+            throw new Error(`Read would exceed file size: offset=${offset}, length=${length}, fileSize=${this.fileSize}, required=${offset + length}`);
+        }
+
         const buffer = Buffer.alloc(length);
         const bytesRead = readSync(this.fd, buffer, 0, length, offset);
 
+        console.log(`[DEBUG] readSync result: requested=${length}, actual=${bytesRead}`);
+
         if (bytesRead !== length) {
             throw new Error(
-                `Expected to read ${length} bytes, but got ${bytesRead}`
+                `Expected to read ${length} bytes, but got ${bytesRead}. Offset: ${offset}, File size: ${this.fileSize}`
             );
         }
 
         const data = new Uint8Array(buffer);
-        return MessagePackUtil.decode(data);
+        
+        // Show first few bytes for debugging
+        const firstBytes = Array.from(data.slice(0, Math.min(20, data.length)))
+            .map(b => `0x${b.toString(16).padStart(2, '0')}`)
+            .join(' ');
+        console.log(`[DEBUG] First ${Math.min(20, data.length)} bytes: ${firstBytes}`);
+        
+        // Add validation for suspicious patterns
+        if (data.length !== length) {
+            console.log(`[WARNING] Buffer length mismatch: expected ${length}, got ${data.length}`);
+        }
+        
+        try {
+            return MessagePackUtil.decode(data);
+        } catch (error) {
+            console.log(`[ERROR] MessagePack decode failed for offset=${offset}, length=${length}`);
+            console.log(`[ERROR] Data preview: ${firstBytes}`);
+            throw error;
+        }
     }
 
     private writeTable(

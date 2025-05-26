@@ -13,15 +13,30 @@ export class MessagePackUtil {
   private static readonly FIXARRAY_PREFIX = 0x90;
   private static readonly FIXSTR_PREFIX = 0xa0;
   private static readonly NIL = 0xc0;
+  private static readonly NEVER_USED = 0xc1; // Reserved but never used
   private static readonly FALSE = 0xc2;
   private static readonly TRUE = 0xc3;
+  private static readonly BIN8 = 0xc4;
+  private static readonly BIN16 = 0xc5;
+  private static readonly BIN32 = 0xc6;
+  private static readonly EXT8 = 0xc7;
+  private static readonly EXT16 = 0xc8;
+  private static readonly EXT32 = 0xc9;
+  private static readonly FLOAT32 = 0xca;
+  private static readonly FLOAT64 = 0xcb;
   private static readonly UINT8 = 0xcc;
   private static readonly UINT16 = 0xcd;
   private static readonly UINT32 = 0xce;
+  private static readonly UINT64 = 0xcf;
   private static readonly INT8 = 0xd0;
   private static readonly INT16 = 0xd1;
   private static readonly INT32 = 0xd2;
-  private static readonly FLOAT64 = 0xcb;
+  private static readonly INT64 = 0xd3;
+  private static readonly FIXEXT1 = 0xd4;
+  private static readonly FIXEXT2 = 0xd5;
+  private static readonly FIXEXT4 = 0xd6;
+  private static readonly FIXEXT8 = 0xd7;
+  private static readonly FIXEXT16 = 0xd8;
   private static readonly STR8 = 0xd9;
   private static readonly STR16 = 0xda;
   private static readonly STR32 = 0xdb;
@@ -201,6 +216,10 @@ class MessagePackDecoder {
   }
 
   decode(): any {
+    if (this.offset >= this.data.length) {
+      throw new Error(`MessagePack decoder: attempted to read past end of buffer (offset: ${this.offset}, length: ${this.data.length})`);
+    }
+    
     const byte = this.data[this.offset++];
 
     // Positive fixint
@@ -230,8 +249,53 @@ class MessagePackDecoder {
 
     switch (byte) {
       case 0xc0: return null;
+      case 0xc1: 
+        // Reserved "never used" type - should not appear in valid MessagePack data
+        throw new Error(`Encountered reserved MessagePack type: 0xc1`);
       case 0xc2: return false;
       case 0xc3: return true;
+      
+      // Binary data types
+      case 0xc4: return this.decodeBinary(this.data[this.offset++]);
+      case 0xc5: {
+        const length = this.view.getUint16(this.offset, false);
+        this.offset += 2;
+        return this.decodeBinary(length);
+      }
+      case 0xc6: {
+        const length = this.view.getUint32(this.offset, false);
+        this.offset += 4;
+        return this.decodeBinary(length);
+      }
+      
+      // Extension types (skip for now, return null)
+      case 0xc7: return this.skipExtension(this.data[this.offset++]);
+      case 0xc8: {
+        const length = this.view.getUint16(this.offset, false);
+        this.offset += 2;
+        return this.skipExtension(length);
+      }
+      case 0xc9: {
+        const length = this.view.getUint32(this.offset, false);
+        this.offset += 4;
+        return this.skipExtension(length);
+      }
+      
+      // Float32
+      case 0xca: {
+        const value = this.view.getFloat32(this.offset, false);
+        this.offset += 4;
+        return value;
+      }
+      
+      // Float64
+      case 0xcb: {
+        const value = this.view.getFloat64(this.offset, false);
+        this.offset += 8;
+        return value;
+      }
+      
+      // Unsigned integers
       case 0xcc: return this.data[this.offset++];
       case 0xcd: {
         const value = this.view.getUint16(this.offset, false);
@@ -243,6 +307,15 @@ class MessagePackDecoder {
         this.offset += 4;
         return value;
       }
+      case 0xcf: {
+        // UINT64 - JavaScript doesn't have native 64-bit integers, use BigInt
+        const value = this.view.getBigUint64(this.offset, false);
+        this.offset += 8;
+        // Convert to number if it fits in safe integer range
+        return value <= Number.MAX_SAFE_INTEGER ? Number(value) : value;
+      }
+      
+      // Signed integers
       case 0xd0: return this.view.getInt8(this.offset++);
       case 0xd1: {
         const value = this.view.getInt16(this.offset, false);
@@ -254,11 +327,22 @@ class MessagePackDecoder {
         this.offset += 4;
         return value;
       }
-      case 0xcb: {
-        const value = this.view.getFloat64(this.offset, false);
+      case 0xd3: {
+        // INT64 - JavaScript doesn't have native 64-bit integers, use BigInt
+        const value = this.view.getBigInt64(this.offset, false);
         this.offset += 8;
-        return value;
+        // Convert to number if it fits in safe integer range
+        return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value;
       }
+      
+      // Fixed-length extension types (skip for now, return null)
+      case 0xd4: return this.skipFixedExtension(1);
+      case 0xd5: return this.skipFixedExtension(2);
+      case 0xd6: return this.skipFixedExtension(4);
+      case 0xd7: return this.skipFixedExtension(8);
+      case 0xd8: return this.skipFixedExtension(16);
+      
+      // Strings
       case 0xd9: return this.decodeString(this.data[this.offset++]);
       case 0xda: {
         const length = this.view.getUint16(this.offset, false);
@@ -270,6 +354,8 @@ class MessagePackDecoder {
         this.offset += 4;
         return this.decodeString(length);
       }
+      
+      // Arrays
       case 0xdc: {
         const length = this.view.getUint16(this.offset, false);
         this.offset += 2;
@@ -280,6 +366,8 @@ class MessagePackDecoder {
         this.offset += 4;
         return this.decodeArray(length);
       }
+      
+      // Maps
       case 0xde: {
         const length = this.view.getUint16(this.offset, false);
         this.offset += 2;
@@ -290,12 +378,16 @@ class MessagePackDecoder {
         this.offset += 4;
         return this.decodeMap(length);
       }
+      
       default:
         throw new Error(`Unknown MessagePack type: 0x${byte.toString(16)}`);
     }
   }
 
   private decodeString(length: number): string {
+    if (this.offset + length > this.data.length) {
+      throw new Error(`MessagePack decoder: attempted to read string of length ${length} past end of buffer (offset: ${this.offset}, remaining: ${this.data.length - this.offset})`);
+    }
     const bytes = this.data.slice(this.offset, this.offset + length);
     this.offset += length;
     return textDecoder.decode(bytes);
@@ -317,5 +409,32 @@ class MessagePackDecoder {
       result[key] = value;
     }
     return result;
+  }
+
+  private decodeBinary(length: number): Uint8Array {
+    if (this.offset + length > this.data.length) {
+      throw new Error(`MessagePack decoder: attempted to read binary data of length ${length} past end of buffer (offset: ${this.offset}, remaining: ${this.data.length - this.offset})`);
+    }
+    const bytes = this.data.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return bytes;
+  }
+
+  private skipExtension(length: number): null {
+    if (this.offset + 1 + length > this.data.length) {
+      throw new Error(`MessagePack decoder: attempted to skip extension of length ${length} past end of buffer (offset: ${this.offset}, remaining: ${this.data.length - this.offset})`);
+    }
+    // Skip extension type byte + data
+    this.offset += 1 + length;
+    return null;
+  }
+
+  private skipFixedExtension(length: number): null {
+    if (this.offset + 1 + length > this.data.length) {
+      throw new Error(`MessagePack decoder: attempted to skip fixed extension of length ${length} past end of buffer (offset: ${this.offset}, remaining: ${this.data.length - this.offset})`);
+    }
+    // Skip extension type byte + fixed-length data
+    this.offset += 1 + length;
+    return null;
   }
 }
