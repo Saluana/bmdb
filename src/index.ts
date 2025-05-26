@@ -17,7 +17,12 @@ export type { WALOperation, Transaction } from './storage/WALStorage';
 export { QueryInstance } from './query/QueryInstance';
 export { Query, QueryFactory, where } from './query/where';
 export { IndexManager } from './query/IndexManager';
-export type { IndexableCondition, QueryPlan, CostEstimate, FieldStatistics } from './query/IndexManager';
+export type {
+    IndexableCondition,
+    QueryPlan,
+    CostEstimate,
+    FieldStatistics,
+} from './query/IndexManager';
 
 // Operations exports
 export * as operations from './operations';
@@ -42,22 +47,38 @@ export type {
     JsonArray,
 } from './utils/types';
 export { LRUCache } from './utils/LRUCache';
+export { MessagePackUtil } from './utils/MessagePackUtil';
 export { VectorUtils } from './utils/VectorUtils';
-export type { Vector, VectorSearchResult, VectorIndex } from './utils/VectorUtils';
+export type {
+    Vector,
+    VectorSearchResult,
+    VectorIndex,
+} from './utils/VectorUtils';
 export { IndexedBTree, BitmapUtils } from './utils/IndexedBTree';
 export type { IndexedBTreeEntry, BitmapSet } from './utils/IndexedBTree';
 
 // Schema exports (V2)
 export { BmDbSchema, createSchema } from './schema/BmDbSchema';
-export type { BmDbFieldMeta, BmDbSchemaMeta, SchemaError } from './schema/types';
-export { 
-    BmDbSchemaError, 
-    BmDbValidationError, 
+export type {
+    BmDbFieldMeta,
+    BmDbSchemaMeta,
+    SchemaError,
+} from './schema/types';
+export {
+    BmDbSchemaError,
+    BmDbValidationError,
     BmDbUniqueConstraintError,
     createValidationError,
-    createUniqueConstraintError
+    createUniqueConstraintError,
 } from './schema/errors';
-export { unique, primaryKey, compoundIndex, field, vector, getFieldMeta } from './schema/helpers';
+export {
+    unique,
+    primaryKey,
+    compoundIndex,
+    field,
+    vector,
+    getFieldMeta,
+} from './schema/helpers';
 export {
     getSchemaFieldMeta,
     isPrimaryKey,
@@ -68,7 +89,7 @@ export {
     validateSchemaData,
     safeValidateSchemaData,
     validatePartialSchemaData,
-    safeValidatePartialSchemaData
+    safeValidatePartialSchemaData,
 } from './schema/utils';
 
 // Default export for convenience
