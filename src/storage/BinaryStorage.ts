@@ -68,11 +68,11 @@ export class BinaryStorage implements Storage {
     private batchTimer: NodeJS.Timeout | null = null;
     private batchSizeLimit: number = 1000; // Batch up to 1000 writes
     private batchTimeLimit: number = 1000; // Flush after 1000ms
-    
+
     // Performance optimizations
     private preAllocatedSize: number = 0; // Track pre-allocated file size
     private fileExtensionChunkSize: number = 16 * 1024 * 1024; // 16MB chunks for better performance
-    
+
     // Buffer pool for reducing allocations
     private bufferPool: Buffer[] = [];
     private maxPoolSize: number = 50;
@@ -361,7 +361,7 @@ export class BinaryStorage implements Storage {
                     this.btree.setRootOffset(this.header.rootNodeOffset);
                 }
                 this.btree.setNextNodeOffset(this.header.nextNodeOffset);
-                
+
                 // Initialize pre-allocated size to current file size
                 this.preAllocatedSize = this.fileSize;
             } else {
@@ -401,7 +401,7 @@ export class BinaryStorage implements Storage {
 
         this.writeHeaderImmediate();
         this.fileSize = HEADER_SIZE;
-        
+
         // Initialize pre-allocated size to current file size
         this.preAllocatedSize = this.fileSize;
     }
@@ -514,7 +514,7 @@ export class BinaryStorage implements Storage {
                         `Expected to read 1024 bytes, but got ${bytesRead}`
                     );
                 }
-                
+
                 // Create copy since we're returning the buffer to pool
                 const result = new Uint8Array(buffer.subarray(0, 1024));
                 this.returnBuffer(buffer);
@@ -545,10 +545,13 @@ export class BinaryStorage implements Storage {
             if (requiredSize > this.preAllocatedSize) {
                 // Pre-allocate space for B-tree nodes in larger chunks
                 const nodeChunkSize = 256 * 1024; // 256KB chunks for B-tree nodes (256 nodes)
-                const chunksNeeded = Math.ceil((requiredSize - this.preAllocatedSize) / nodeChunkSize);
-                const newPreAllocatedSize = this.preAllocatedSize + (chunksNeeded * nodeChunkSize);
+                const chunksNeeded = Math.ceil(
+                    (requiredSize - this.preAllocatedSize) / nodeChunkSize
+                );
+                const newPreAllocatedSize =
+                    this.preAllocatedSize + chunksNeeded * nodeChunkSize;
                 const extensionSize = newPreAllocatedSize - this.fileSize;
-                
+
                 if (extensionSize > 0) {
                     const padding = Buffer.alloc(extensionSize);
                     const paddingWritten = FileSystem.writeSyncFd(
@@ -565,7 +568,7 @@ export class BinaryStorage implements Storage {
                     }
                     this.fileSize = newPreAllocatedSize;
                 }
-                
+
                 this.preAllocatedSize = newPreAllocatedSize;
             }
 
@@ -615,7 +618,9 @@ export class BinaryStorage implements Storage {
             const data = new Uint8Array(buffer.subarray(0, length));
 
             // Show first few bytes for debugging
-            const firstBytes = Array.from(data.slice(0, Math.min(20, data.length)))
+            const firstBytes = Array.from(
+                data.slice(0, Math.min(20, data.length))
+            )
                 .map((b) => `0x${b.toString(16).padStart(2, '0')}`)
                 .join(' ');
 
@@ -643,7 +648,7 @@ export class BinaryStorage implements Storage {
         tableData: Record<string, any>
     ): void {
         const entries = Object.entries(tableData);
-        
+
         if (entries.length > 10) {
             // Use bulk insert for larger datasets
             this.writeTableBulk(tableName, tableData);
@@ -654,52 +659,52 @@ export class BinaryStorage implements Storage {
             }
         }
     }
-    
+
     private writeTableBulk(
         tableName: string,
         tableData: Record<string, any>
     ): void {
         const btreeEntries: BTreeEntry[] = [];
         const pendingWrites: PendingWrite[] = [];
-        
+
         for (const [docId, document] of Object.entries(tableData)) {
             const key = this.createEntryKey(tableName, docId);
             const data = MessagePackUtil.encode(document);
-            
+
             // Allocate space for document
             const offset = this.allocateDocumentSpace(data.length);
-            
+
             // Prepare batch write
             pendingWrites.push({
                 offset,
                 data: Buffer.from(data),
-                length: data.length
+                length: data.length,
             });
-            
+
             // Prepare B-tree entry
             btreeEntries.push({
                 key,
                 offset,
-                length: data.length
+                length: data.length,
             });
-            
+
             this.header.documentCount++;
         }
-        
+
         // Batch write all document data
         for (const write of pendingWrites) {
             this.scheduleBatchWrite(write.offset, write.data);
         }
-        
+
         // Bulk insert all B-tree entries
         this.btree.bulkInsert(btreeEntries);
-        
+
         // Update root offset in header if it changed
         const newRootOffset = this.btree.getRootOffset();
         if (newRootOffset !== this.header.rootNodeOffset) {
             this.header.rootNodeOffset = newRootOffset;
         }
-        
+
         // Mark header as dirty
         this.headerDirty = true;
     }
@@ -713,15 +718,21 @@ export class BinaryStorage implements Storage {
             try {
                 // Use smaller, more reasonable pre-allocation for documents
                 const baseChunkSize = 4 * 1024 * 1024; // 4MB base chunks
-                
+
                 // Scale chunk size based on document size to avoid over-allocation
                 const adaptiveChunkSize = Math.max(baseChunkSize, length * 4); // At least 4x the document size
-                const actualChunkSize = Math.min(adaptiveChunkSize, this.fileExtensionChunkSize);
-                
+                const actualChunkSize = Math.min(
+                    adaptiveChunkSize,
+                    this.fileExtensionChunkSize
+                );
+
                 // Allocate one chunk ahead to reduce future extensions
-                const newPreAllocatedSize = Math.max(requiredSize, this.preAllocatedSize + actualChunkSize);
+                const newPreAllocatedSize = Math.max(
+                    requiredSize,
+                    this.preAllocatedSize + actualChunkSize
+                );
                 const extensionSize = newPreAllocatedSize - this.fileSize;
-                
+
                 if (extensionSize > 0) {
                     const padding = Buffer.alloc(extensionSize);
                     const bytesWritten = FileSystem.writeSyncFd(
@@ -738,7 +749,7 @@ export class BinaryStorage implements Storage {
                     }
                     this.fileSize = newPreAllocatedSize;
                 }
-                
+
                 this.preAllocatedSize = newPreAllocatedSize;
             } catch (error) {
                 throw new Error(
@@ -1466,10 +1477,13 @@ export class BinaryStorage implements Storage {
         }
         return Buffer.alloc(size);
     }
-    
+
     private returnBuffer(buffer: Buffer): void {
         // Only pool reasonable-sized buffers and avoid growing pool too large
-        if (buffer.length <= 64 * 1024 && this.bufferPool.length < this.maxPoolSize) {
+        if (
+            buffer.length <= 64 * 1024 &&
+            this.bufferPool.length < this.maxPoolSize
+        ) {
             this.bufferPool.push(buffer);
         }
     }
