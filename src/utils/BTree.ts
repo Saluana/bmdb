@@ -385,14 +385,17 @@ export class BTree {
     private nodeCache = new Map<number, BTreeNode>();
     private nodeCacheAccessOrder = new Map<number, number>(); // LRU tracking
     private cacheAccessCounter = 0;
-    private readonly maxCacheSize = 1000; // Maximum nodes to cache
+    private maxCacheSize: number = 1000; // Maximum nodes to cache
     private freeNodeOffsets: number[] = [];
     private nextNodeOffset: number = 32; // Start after header
 
     constructor(
         private readNode: (offset: number) => Uint8Array,
-        private writeNode: (offset: number, data: Uint8Array) => void
-    ) {}
+        private writeNode: (offset: number, data: Uint8Array) => void,
+        maxCacheSize: number = 1000
+    ) {
+        this.maxCacheSize = maxCacheSize;
+    }
 
     // Set root offset (called when loading from file)
     setRootOffset(offset: number): void {
