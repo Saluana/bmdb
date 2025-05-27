@@ -63,21 +63,21 @@ export class BinaryStorage implements Storage {
     private mmapEnabled: boolean = true;
     private headerDirty: boolean = false; // Track if header needs writing
 
-    // Write batching system
+    // Write batching system - optimized for higher throughput
     private pendingWrites: PendingWrite[] = [];
     private batchTimer: NodeJS.Timeout | null = null;
-    private batchSizeLimit: number = 1000; // Batch up to 1000 writes
-    private batchTimeLimit: number = 1000; // Flush after 1000ms
+    private batchSizeLimit: number = 5000; // Increased from 1000 to 5000
+    private batchTimeLimit: number = 100; // Reduced from 1000ms to 100ms for faster flushing
 
     // Performance optimizations
     private preAllocatedSize: number = 0; // Track pre-allocated file size
-    private fileExtensionChunkSize: number = 16 * 1024 * 1024; // 16MB chunks for better performance
+    private fileExtensionChunkSize: number = 32 * 1024 * 1024; // Increased to 32MB chunks
 
-    // Buffer pool for reducing allocations
+    // Buffer pool for reducing allocations - expanded
     private bufferPool: Buffer[] = [];
-    private maxPoolSize: number = 50;
+    private maxPoolSize: number = 200; // Increased from 50 to 200
 
-    // Micro-batching for individual document writes
+    // Aggressive micro-batching for individual document writes
     private pendingDocuments: Array<{
         tableName: string;
         docId: string;
@@ -86,8 +86,30 @@ export class BinaryStorage implements Storage {
         reject: (error: Error) => void;
     }> = [];
     private microBatchTimer: NodeJS.Timeout | null = null;
-    private microBatchSize: number = 10; // Batch up to 10 individual documents
-    private microBatchTimeMs: number = 5; // Wait 5ms for more documents
+    private microBatchSize: number = 100; // Increased from 10 to 100 documents
+    private microBatchTimeMs: number = 2; // Reduced from 5ms to 2ms
+
+    // Memory-based optimizations for ultra-fast writes
+    private memoryBTreeUpdates = new Map<string, BTreeEntry>();
+    private memoryDocuments = new Map<
+        string,
+        { data: Buffer; offset: number }
+    >();
+    private serializationCache = new Map<string, Buffer>();
+    private readCache = new Map<string, { data: any; timestamp: number }>();
+
+    // Memory optimization timers
+    private memoryBTreeFlushTimer: NodeJS.Timeout | null = null;
+    private memoryDocumentFlushTimer: NodeJS.Timeout | null = null;
+    private readCacheCleanupTimer: NodeJS.Timeout | null = null;
+
+    // Memory optimization configuration
+    private readonly memoryFlushIntervalMs = 50; // Very aggressive flushing for ultra-fast writes
+    private readonly readCacheTTL = 10000; // 10 seconds TTL for read cache
+    private readonly maxReadCacheSize = 1000; // Maximum entries in read cache
+    private readonly maxSerializationCacheSize = 500; // Maximum serialization cache entries
+    private readonly memoryBTreeFlushSize = 100; // Flush when 100 updates are pending
+    private readonly memoryDocumentFlushSize = 50; // Flush when 50 documents are pending
 
     constructor(
         path: string = 'db.bmdb',
@@ -262,8 +284,220 @@ export class BinaryStorage implements Storage {
         }
     }
 
+    // Memory-based optimization methods for ultra-fast writes
+    private flushMemoryBTreeUpdates(): void {
+        if (this.memoryBTreeUpdates.size === 0) return;
+
+        // Clear timer if exists
+        if (this.memoryBTreeFlushTimer) {
+            clearTimeout(this.memoryBTreeFlushTimer);
+            this.memoryBTreeFlushTimer = null;
+        }
+
+        try {
+            // Bulk insert all memory B-tree updates to the persistent B-tree
+            const entries = Array.from(this.memoryBTreeUpdates.values());
+            this.btree.bulkInsert(entries);
+
+            // Update header if root offset changed
+            const newRootOffset = this.btree.getRootOffset();
+            if (newRootOffset !== this.header.rootNodeOffset) {
+                this.header.rootNodeOffset = newRootOffset;
+                this.headerDirty = true;
+            }
+
+            // Clear memory updates
+            this.memoryBTreeUpdates.clear();
+        } catch (error) {
+            console.error('Failed to flush memory B-tree updates:', error);
+            // Don't clear memory updates on error - will retry next flush
+        }
+    }
+
+    private scheduleMemoryBTreeFlush(): void {
+        if (this.memoryBTreeUpdates.size >= this.memoryBTreeFlushSize) {
+            this.flushMemoryBTreeUpdates();
+        } else if (!this.memoryBTreeFlushTimer) {
+            this.memoryBTreeFlushTimer = setTimeout(() => {
+                this.flushMemoryBTreeUpdates();
+            }, this.memoryFlushIntervalMs);
+        }
+    }
+
+    private flushMemoryDocuments(): void {
+        if (this.memoryDocuments.size === 0) return;
+
+        // Clear timer if exists
+        if (this.memoryDocumentFlushTimer) {
+            clearTimeout(this.memoryDocumentFlushTimer);
+            this.memoryDocumentFlushTimer = null;
+        }
+
+        try {
+            // Write all memory documents to disk
+            for (const [key, doc] of this.memoryDocuments) {
+                this.scheduleBatchWrite(doc.offset, doc.data);
+            }
+
+            // Clear memory documents
+            this.memoryDocuments.clear();
+        } catch (error) {
+            console.error('Failed to flush memory documents:', error);
+            // Don't clear on error - will retry next flush
+        }
+    }
+
+    private scheduleMemoryDocumentFlush(): void {
+        if (this.memoryDocuments.size >= this.memoryDocumentFlushSize) {
+            this.flushMemoryDocuments();
+        } else if (!this.memoryDocumentFlushTimer) {
+            this.memoryDocumentFlushTimer = setTimeout(() => {
+                this.flushMemoryDocuments();
+            }, this.memoryFlushIntervalMs);
+        }
+    }
+
+    private getCachedSerialization(key: string): Buffer | null {
+        return this.serializationCache.get(key) || null;
+    }
+
+    private setCachedSerialization(key: string, serialized: Buffer): void {
+        // Prevent cache from growing too large
+        if (this.serializationCache.size >= this.maxSerializationCacheSize) {
+            // Remove oldest entry (simple FIFO strategy)
+            const firstKey = this.serializationCache.keys().next().value;
+            if (firstKey) {
+                this.serializationCache.delete(firstKey);
+            }
+        }
+
+        this.serializationCache.set(key, serialized);
+    }
+
+    private getFromReadCache(key: string): any | null {
+        const cached = this.readCache.get(key);
+        if (cached) {
+            // Check if cache entry is still valid
+            if (Date.now() - cached.timestamp <= this.readCacheTTL) {
+                return cached.data;
+            } else {
+                // Remove expired entry
+                this.readCache.delete(key);
+            }
+        }
+        return null;
+    }
+
+    private setInReadCache(key: string, data: any): void {
+        // Prevent cache from growing too large
+        if (this.readCache.size >= this.maxReadCacheSize) {
+            // Remove oldest entries
+            const now = Date.now();
+            for (const [cacheKey, cached] of this.readCache) {
+                if (now - cached.timestamp > this.readCacheTTL) {
+                    this.readCache.delete(cacheKey);
+                }
+            }
+
+            // If still too large, remove oldest entry
+            if (this.readCache.size >= this.maxReadCacheSize) {
+                const firstKey = this.readCache.keys().next().value;
+                if (firstKey) {
+                    this.readCache.delete(firstKey);
+                }
+            }
+        }
+
+        this.readCache.set(key, { data, timestamp: Date.now() });
+    }
+
+    private clearReadCache(): void {
+        this.readCache.clear();
+    }
+
+    // Enhanced document read with caching
+    private readDocumentDataCached(offset: number, length: number): any {
+        const cacheKey = `${offset}:${length}`;
+
+        // Try read cache first
+        const cached = this.getFromReadCache(cacheKey);
+        if (cached !== null) {
+            return cached;
+        }
+
+        // Read from disk
+        const data = this.readDocumentData(offset, length);
+
+        // Cache the result
+        this.setInReadCache(cacheKey, data);
+
+        return data;
+    }
+
+    // Enhanced document write with memory optimization
+    private writeDocumentMemoryOptimized(
+        tableName: string,
+        docId: string,
+        document: any
+    ): void {
+        const key = this.createEntryKey(tableName, docId);
+
+        // Try serialization cache first
+        let serializedData = this.getCachedSerialization(document);
+        if (!serializedData) {
+            serializedData = Buffer.from(MessagePackUtil.encode(document));
+            this.setCachedSerialization(document, serializedData);
+        }
+
+        // Allocate space
+        const offset = this.allocateDocumentSpace(serializedData.length);
+
+        // Store in memory for ultra-fast writes
+        this.memoryDocuments.set(key, {
+            data: serializedData,
+            offset
+        });
+
+        // Create B-tree entry and store in memory
+        const entry: BTreeEntry = {
+            key,
+            offset,
+            length: serializedData.length,
+        };
+        this.memoryBTreeUpdates.set(key, entry);
+
+        // Update counters
+        this.header.documentCount++;
+        this.headerDirty = true;
+
+        // Schedule flushes
+        this.scheduleMemoryDocumentFlush();
+        this.scheduleMemoryBTreeFlush();
+
+        // Clear read cache for this document
+        this.readCache.delete(key);
+    }
+
     close(): void {
-        // Flush any pending micro-batch first
+        // Flush all memory-based optimizations first
+        this.flushMemoryBTreeUpdates();
+        this.flushMemoryDocuments();
+
+        // Clear memory optimization timers
+        if (this.memoryBTreeFlushTimer) {
+            clearTimeout(this.memoryBTreeFlushTimer);
+            this.memoryBTreeFlushTimer = null;
+        }
+        if (this.memoryDocumentFlushTimer) {
+            clearTimeout(this.memoryDocumentFlushTimer);
+            this.memoryDocumentFlushTimer = null;
+        }
+
+        // Clear caches
+        this.serializationCache.clear();
+        this.readCache.clear();
+
+        // Flush any pending micro-batch
         this.flushMicroBatch();
 
         // Flush any pending batch writes
@@ -1247,9 +1481,10 @@ export class BinaryStorage implements Storage {
             | 'async'
             | 'fileLocking'
             | 'vectorSearch'
+            | 'documentWrite'
     ): boolean {
         if (feature === 'vectorSearch') return false;
-        return ['async'].includes(feature);
+        return ['async', 'documentWrite'].includes(feature);
     }
 
     // Memory-mapped chunk management methods

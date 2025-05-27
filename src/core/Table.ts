@@ -275,13 +275,38 @@ export class Table<T extends Record<string, any> = any> {
         const docData =
             document instanceof Document ? document.toJSON() : { ...document };
 
-        this._updateTable((table) => {
+        // Use direct document writing for BinaryStorage to leverage micro-batching
+        if (
+            (this._storage as any).supportsFeature &&
+            (this._storage as any).supportsFeature('documentWrite') &&
+            (this._storage as any).writeDocument
+        ) {
+            // Check if document already exists
+            const tables = this._storage.read() || {};
+            const table =
+                (tables[this._name] as Record<string, Record<string, any>>) ||
+                {};
+
             if (String(docId) in table) {
                 throw new Error(`Document with ID ${docId} already exists`);
             }
 
-            table[String(docId)] = docData;
-        });
+            // Use micro-batched document write
+            (this._storage as any).writeDocument(
+                this._name,
+                String(docId),
+                docData
+            );
+        } else {
+            // Fallback to table-level update
+            this._updateTable((table) => {
+                if (String(docId) in table) {
+                    throw new Error(`Document with ID ${docId} already exists`);
+                }
+
+                table[String(docId)] = docData;
+            });
+        }
 
         // Update indexes
         this._indexManager.addDocument(docId, docData);
@@ -999,7 +1024,7 @@ export class Table<T extends Record<string, any> = any> {
                 if (doc) {
                     // Store the old document for index updates
                     const oldDocCopy = { ...doc };
-                    
+
                     // Perform the update
                     performUpdate(doc);
                     updatedIds.push(docId);
