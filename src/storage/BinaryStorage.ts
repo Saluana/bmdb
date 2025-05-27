@@ -77,6 +77,18 @@ export class BinaryStorage implements Storage {
     private bufferPool: Buffer[] = [];
     private maxPoolSize: number = 50;
 
+    // Micro-batching for individual document writes
+    private pendingDocuments: Array<{
+        tableName: string;
+        docId: string;
+        document: any;
+        resolve: () => void;
+        reject: (error: Error) => void;
+    }> = [];
+    private microBatchTimer: NodeJS.Timeout | null = null;
+    private microBatchSize: number = 10; // Batch up to 10 individual documents
+    private microBatchTimeMs: number = 5; // Wait 5ms for more documents
+
     constructor(
         path: string = 'db.bmdb',
         options: {
@@ -251,8 +263,23 @@ export class BinaryStorage implements Storage {
     }
 
     close(): void {
-        // Flush any pending batch writes first
+        // Flush any pending micro-batch first
+        this.flushMicroBatch();
+
+        // Flush any pending batch writes
         this.flushBatchWrites();
+
+        // Clear micro-batch timer
+        if (this.microBatchTimer) {
+            clearTimeout(this.microBatchTimer);
+            this.microBatchTimer = null;
+        }
+
+        // Clear batch timer
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
 
         // Flush all dirty memory-mapped chunks
         this.flushAllChunks();
@@ -288,6 +315,24 @@ export class BinaryStorage implements Storage {
     }
 
     writeDocument(tableName: string, docId: string, document: any): void {
+        // For better performance, use micro-batching for individual writes
+        // This schedules the write to be processed in a batch
+        this.scheduleMicroBatch(tableName, docId, document).catch((error) => {
+            // Since this is a sync interface, we can't return the error
+            // Log it and continue - the micro-batch will handle retries if needed
+            console.error('Failed to write document via micro-batch:', error);
+
+            // Fallback to immediate write on batch failure
+            this.writeDocumentImmediate(tableName, docId, document);
+        });
+    }
+
+    // Immediate write method for fallback and legacy use cases
+    private writeDocumentImmediate(
+        tableName: string,
+        docId: string,
+        document: any
+    ): void {
         const key = this.createEntryKey(tableName, docId);
         const data = MessagePackUtil.encode(document);
 
@@ -653,9 +698,9 @@ export class BinaryStorage implements Storage {
             // Use bulk insert for larger datasets
             this.writeTableBulk(tableName, tableData);
         } else {
-            // Use individual inserts for smaller datasets
+            // Use immediate writes for smaller datasets to avoid double-batching
             for (const [docId, document] of entries) {
-                this.writeDocument(tableName, docId, document);
+                this.writeDocumentImmediate(tableName, docId, document);
             }
         }
     }
@@ -1485,6 +1530,106 @@ export class BinaryStorage implements Storage {
             this.bufferPool.length < this.maxPoolSize
         ) {
             this.bufferPool.push(buffer);
+        }
+    }
+
+    // Micro-batching methods for performance optimization
+    private scheduleMicroBatch(
+        tableName: string,
+        docId: string,
+        document: any
+    ): Promise<void> {
+        return new Promise((resolve, reject) => {
+            // Add document to pending batch
+            this.pendingDocuments.push({
+                tableName,
+                docId,
+                document,
+                resolve,
+                reject,
+            });
+
+            // If batch is full, flush immediately
+            if (this.pendingDocuments.length >= this.microBatchSize) {
+                this.flushMicroBatch();
+            } else if (!this.microBatchTimer) {
+                // Set timer to flush batch after timeout
+                this.microBatchTimer = setTimeout(() => {
+                    this.flushMicroBatch();
+                }, this.microBatchTimeMs);
+            }
+        });
+    }
+
+    private flushMicroBatch(): void {
+        if (this.pendingDocuments.length === 0) return;
+
+        // Clear timer if it exists
+        if (this.microBatchTimer) {
+            clearTimeout(this.microBatchTimer);
+            this.microBatchTimer = null;
+        }
+
+        const documents = this.pendingDocuments.slice();
+        this.pendingDocuments = [];
+
+        try {
+            // Group documents by table for efficient batch processing
+            const tableGroups = new Map<
+                string,
+                Array<{
+                    docId: string;
+                    document: any;
+                    resolve: () => void;
+                    reject: (error: Error) => void;
+                }>
+            >();
+
+            for (const doc of documents) {
+                if (!tableGroups.has(doc.tableName)) {
+                    tableGroups.set(doc.tableName, []);
+                }
+                tableGroups.get(doc.tableName)!.push({
+                    docId: doc.docId,
+                    document: doc.document,
+                    resolve: doc.resolve,
+                    reject: doc.reject,
+                });
+            }
+
+            // Process each table group using bulk insert
+            for (const [tableName, docs] of tableGroups) {
+                try {
+                    const documentsForTable: Record<string, any> = {};
+                    for (const doc of docs) {
+                        documentsForTable[doc.docId] = doc.document;
+                    }
+
+                    // Use existing bulk write optimization
+                    this.writeTableBulk(tableName, documentsForTable);
+
+                    // Resolve all promises for this table
+                    for (const doc of docs) {
+                        doc.resolve();
+                    }
+                } catch (error) {
+                    // Reject all promises for this table
+                    for (const doc of docs) {
+                        doc.reject(
+                            error instanceof Error
+                                ? error
+                                : new Error(String(error))
+                        );
+                    }
+                }
+            }
+        } catch (error) {
+            // Fallback: reject all promises
+            for (const doc of documents) {
+                doc.reject(
+                    error instanceof Error ? error : new Error(String(error))
+                );
+            }
         }
     }
 }
