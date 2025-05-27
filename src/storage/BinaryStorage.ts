@@ -24,7 +24,7 @@ import { FileSystem } from '../utils/FileSystem';
 const MAGIC_NUMBER = 0x424d4442; // "BMDB"
 const FORMAT_VERSION = 1;
 const HEADER_SIZE = 32;
-const MMAP_CHUNK_SIZE = 64 * 1024; // 64KB chunks for memory mapping
+const MMAP_CHUNK_SIZE = 256 * 1024; // Increased to 256KB chunks for better read performance
 
 interface FileHeader {
     magic: number;
@@ -103,35 +103,45 @@ export class BinaryStorage implements Storage {
     private memoryDocumentFlushTimer: NodeJS.Timeout | null = null;
     private readCacheCleanupTimer: NodeJS.Timeout | null = null;
 
-    // Memory optimization configuration
+    // Memory optimization configuration - Aggressive settings for read/update performance
     private readonly memoryFlushIntervalMs = 50; // Very aggressive flushing for ultra-fast writes
-    private readonly readCacheTTL = 10000; // 10 seconds TTL for read cache
-    private readonly maxReadCacheSize = 1000; // Maximum entries in read cache
-    private readonly maxSerializationCacheSize = 500; // Maximum serialization cache entries
+    private readonly readCacheTTL = 30000; // Increased to 30 seconds TTL for read cache
+    private readonly maxReadCacheSize = 5000; // Increased to 5000 entries in read cache
+    private readonly maxSerializationCacheSize = 2000; // Increased serialization cache entries
     private readonly memoryBTreeFlushSize = 100; // Flush when 100 updates are pending
     private readonly memoryDocumentFlushSize = 50; // Flush when 50 documents are pending
+
+    // Prefetching mechanism for sequential reads
+    private lastReadOffset: number = -1;
+    private prefetchBuffer: Buffer | null = null;
+    private prefetchOffset: number = -1;
+    private prefetchSize: number = 512 * 1024; // 512KB prefetch buffer
+
+    // Cache statistics for monitoring performance
+    private cacheHits = 0;
+    private cacheMisses = 0;
+    private totalReads = 0;
 
     constructor(
         path: string = 'db.bmdb',
         options: {
             maxCacheSize?: number;
             mmapEnabled?: boolean;
-            chunkSize?: number;
             batchSize?: number;
             batchTimeMs?: number;
         } = {}
     ) {
         this.path = path;
-        this.maxCacheSize = options.maxCacheSize ?? 16;
-        this.mmapEnabled = options.mmapEnabled ?? false; // Disable by default for testing
+        this.maxCacheSize = options.maxCacheSize ?? 64; // Doubled for better read performance
+        this.mmapEnabled = options.mmapEnabled ?? true; // Enable by default for better read performance
         this.batchSizeLimit = options.batchSize ?? 1000;
         this.batchTimeLimit = options.batchTimeMs ?? 1000;
 
-        // Initialize B-tree with memory-mapped file I/O callbacks and larger cache
+        // Initialize B-tree with memory-mapped file I/O callbacks and much larger cache
         this.btree = new BTree(
             (offset) => this.readNodeFromFile(offset),
             (offset, data) => this.writeNodeToFile(offset, data),
-            5000 // Larger cache size for better performance
+            15000 // Tripled cache size for much better read performance
         );
 
         this.initializeFile();
@@ -215,6 +225,8 @@ export class BinaryStorage implements Storage {
         try {
             // Flush any pending writes before reading
             this.flushBatchWrites();
+            this.flushMemoryBTreeUpdates();
+            this.flushMemoryDocuments();
 
             // Get all entries from B-tree
             const entries = this.btree.getAllEntries();
@@ -223,29 +235,36 @@ export class BinaryStorage implements Storage {
 
             const result: JsonObject = {};
 
-            // Read each table's documents
-            const tableMap = new Map<string, Record<string, any>>();
+            // Group entries by table for optimized batch reading
+            const tableEntries = new Map<
+                string,
+                Array<{ docId: string; entry: BTreeEntry }>
+            >();
 
-            for (let i = 0; i < entries.length; i++) {
-                const entry = entries[i];
-
+            for (const entry of entries) {
                 const [tableName, docId] = this.parseEntryKey(entry.key);
-                const documentData = this.readDocumentData(
-                    entry.offset,
-                    entry.length
-                );
 
-                if (!tableMap.has(tableName)) {
-                    tableMap.set(tableName, {});
+                if (!tableEntries.has(tableName)) {
+                    tableEntries.set(tableName, []);
                 }
 
-                tableMap.get(tableName)![docId] = documentData;
+                tableEntries.get(tableName)!.push({ docId, entry });
             }
 
-            // Convert to expected format
-            tableMap.forEach((documents, tableName) => {
-                result[tableName] = documents;
-            });
+            // Process each table using optimized bulk reading
+            for (const [tableName, tableDocuments] of tableEntries) {
+                result[tableName] = {};
+
+                // Sort by offset for sequential I/O performance
+                tableDocuments.sort((a, b) => a.entry.offset - b.entry.offset);
+
+                // Use bulk read optimization for this table
+                const docIds = tableDocuments.map((doc) => doc.docId);
+                const bulkResults = this.readDocuments(tableName, docIds);
+
+                // Merge bulk results into final result
+                Object.assign(result[tableName], bulkResults);
+            }
 
             return result;
         } catch (error) {
@@ -375,16 +394,21 @@ export class BinaryStorage implements Storage {
     }
 
     private getFromReadCache(key: string): any | null {
+        this.totalReads++;
+
         const cached = this.readCache.get(key);
         if (cached) {
             // Check if cache entry is still valid
             if (Date.now() - cached.timestamp <= this.readCacheTTL) {
+                this.cacheHits++;
                 return cached.data;
             } else {
                 // Remove expired entry
                 this.readCache.delete(key);
             }
         }
+
+        this.cacheMisses++;
         return null;
     }
 
@@ -455,7 +479,7 @@ export class BinaryStorage implements Storage {
         // Store in memory for ultra-fast writes
         this.memoryDocuments.set(key, {
             data: serializedData,
-            offset
+            offset,
         });
 
         // Create B-tree entry and store in memory
@@ -541,11 +565,52 @@ export class BinaryStorage implements Storage {
 
     readDocument(tableName: string, docId: string): any | null {
         const key = this.createEntryKey(tableName, docId);
-        const entry = this.btree.find(key);
 
+        // Check memory-based cache first for ultra-fast reads
+        const memoryCached = this.memoryDocuments.get(key);
+        if (memoryCached) {
+            try {
+                return MessagePackUtil.decode(memoryCached.data);
+            } catch (error) {
+                // Remove corrupted memory cache entry
+                this.memoryDocuments.delete(key);
+            }
+        }
+
+        // Check read cache next
+        const cached = this.getFromReadCache(key);
+        if (cached !== null) {
+            return cached;
+        }
+
+        // Find in B-tree index
+        const entry = this.btree.find(key);
         if (!entry) return null;
 
-        return this.readDocumentData(entry.offset, entry.length);
+        // Use memory-mapped read if enabled for better performance
+        let result: any;
+        if (this.mmapEnabled) {
+            try {
+                const data = this.readFromMappedChunk(
+                    entry.offset,
+                    entry.length
+                );
+                result = MessagePackUtil.decode(data);
+            } catch (error) {
+                // Fallback to regular read on memory-mapped read failure
+                result = this.readDocumentDataCached(
+                    entry.offset,
+                    entry.length
+                );
+            }
+        } else {
+            result = this.readDocumentDataCached(entry.offset, entry.length);
+        }
+
+        // Cache the result with the document key for faster subsequent access
+        this.setInReadCache(key, result);
+
+        return result;
     }
 
     writeDocument(tableName: string, docId: string, document: any): void {
@@ -1729,20 +1794,37 @@ export class BinaryStorage implements Storage {
     getCacheStats(): {
         totalChunks: number;
         dirtyChunks: number;
-        cacheHitRatio: number;
         memoryUsage: number;
+        cacheHitRatio: number;
+        readCacheSize: number;
+        memoryCacheSize: number;
+        totalReads: number;
+        cacheHits: number;
+        cacheMisses: number;
     } {
-        const totalChunks = this.mmapChunks.size;
-        const dirtyChunks = Array.from(this.mmapChunks.values()).filter(
-            (chunk) => chunk.dirty
-        ).length;
-        const memoryUsage = totalChunks * MMAP_CHUNK_SIZE;
+        let dirtyChunks = 0;
+        let memoryUsage = 0;
+
+        for (const chunk of this.mmapChunks.values()) {
+            if (chunk.dirty) dirtyChunks++;
+            memoryUsage += chunk.buffer.length;
+        }
+
+        // Add memory from other caches
+        memoryUsage += this.readCache.size * 1024; // Estimate
+        memoryUsage += this.memoryDocuments.size * 2048; // Estimate
 
         return {
-            totalChunks,
+            totalChunks: this.mmapChunks.size,
             dirtyChunks,
-            cacheHitRatio: 0, // Would need hit/miss tracking to implement
             memoryUsage,
+            cacheHitRatio:
+                this.totalReads > 0 ? this.cacheHits / this.totalReads : 0,
+            readCacheSize: this.readCache.size,
+            memoryCacheSize: this.memoryDocuments.size,
+            totalReads: this.totalReads,
+            cacheHits: this.cacheHits,
+            cacheMisses: this.cacheMisses,
         };
     }
 
@@ -1866,5 +1948,276 @@ export class BinaryStorage implements Storage {
                 );
             }
         }
+    }
+
+    // Bulk read optimization for better performance
+    readDocuments(tableName: string, docIds: string[]): Record<string, any> {
+        const result: Record<string, any> = {};
+        const missingEntries: Array<{ docId: string; entry: BTreeEntry }> = [];
+
+        // First pass: check memory cache and read cache
+        for (const docId of docIds) {
+            const key = this.createEntryKey(tableName, docId);
+
+            // Check memory cache first
+            const memoryCached = this.memoryDocuments.get(key);
+            if (memoryCached) {
+                try {
+                    result[docId] = MessagePackUtil.decode(memoryCached.data);
+                    continue;
+                } catch (error) {
+                    this.memoryDocuments.delete(key);
+                }
+            }
+
+            // Check read cache
+            const cached = this.getFromReadCache(key);
+            if (cached !== null) {
+                result[docId] = cached;
+                continue;
+            }
+
+            // Find in B-tree for documents not in cache
+            const entry = this.btree.find(key);
+            if (entry) {
+                missingEntries.push({ docId, entry });
+            }
+        }
+
+        if (missingEntries.length === 0) {
+            return result;
+        }
+
+        // Second pass: bulk read missing documents from disk
+        // Sort by offset for sequential I/O performance
+        missingEntries.sort((a, b) => a.entry.offset - b.entry.offset);
+
+        for (const { docId, entry } of missingEntries) {
+            try {
+                const data = this.readDocumentDataCached(
+                    entry.offset,
+                    entry.length
+                );
+                result[docId] = data;
+
+                // Cache with document key
+                const key = this.createEntryKey(tableName, docId);
+                this.setInReadCache(key, data);
+            } catch (error) {
+                console.warn(
+                    `Failed to read document ${tableName}:${docId}:`,
+                    error
+                );
+                // Continue with other documents
+            }
+        }
+
+        return result;
+    }
+
+    // Additional optimized methods for common operations
+    readTable(tableName: string): Record<string, any> {
+        // Flush any pending writes first
+        this.flushBatchWrites();
+        this.flushMemoryBTreeUpdates();
+        this.flushMemoryDocuments();
+
+        const result: Record<string, any> = {};
+        const tablePrefix = `${tableName}:`;
+
+        // Get all entries with table prefix
+        const allEntries = this.btree.getAllEntries();
+        const tableEntries = allEntries.filter((entry) =>
+            entry.key.startsWith(tablePrefix)
+        );
+
+        if (tableEntries.length === 0) {
+            return result;
+        }
+
+        // Sort by offset for sequential I/O
+        tableEntries.sort((a, b) => a.offset - b.offset);
+
+        // Batch read all documents for this table
+        for (const entry of tableEntries) {
+            const [, docId] = this.parseEntryKey(entry.key);
+
+            // Check caches first
+            const cached = this.getFromReadCache(entry.key);
+            if (cached !== null) {
+                result[docId] = cached;
+                continue;
+            }
+
+            try {
+                const data = this.readDocumentDataCached(
+                    entry.offset,
+                    entry.length
+                );
+                result[docId] = data;
+                this.setInReadCache(entry.key, data);
+            } catch (error) {
+                console.warn(`Failed to read document ${entry.key}:`, error);
+            }
+        }
+
+        return result;
+    }
+
+    // Optimized update method for better performance
+    updateDocument(tableName: string, docId: string, document: any): boolean {
+        const key = this.createEntryKey(tableName, docId);
+
+        // Check if document exists first (fast B-tree lookup)
+        const existingEntry = this.btree.find(key);
+        if (!existingEntry) {
+            return false; // Document doesn't exist
+        }
+
+        // Clear caches for this document
+        this.readCache.delete(key);
+        this.memoryDocuments.delete(key);
+        this.memoryBTreeUpdates.delete(key);
+
+        // Use memory-optimized write for ultra-fast updates
+        this.writeDocumentMemoryOptimized(tableName, docId, document);
+
+        return true;
+    }
+
+    // Enhanced bulk update method for better performance
+    updateDocuments(tableName: string, updates: Record<string, any>): number {
+        const entries = Object.entries(updates);
+        if (entries.length === 0) return 0;
+
+        // Always use the optimized bulk update method
+        return this.updateDocumentsBulk(tableName, updates);
+    }
+
+    // Ultra-fast bulk update method with optimized I/O
+    updateDocumentsBulk(
+        tableName: string,
+        updates: Record<string, any>
+    ): number {
+        const entries = Object.entries(updates);
+        if (entries.length === 0) return 0;
+
+        let updatedCount = 0;
+        const existingEntries: Array<{
+            docId: string;
+            key: string;
+            entry: BTreeEntry;
+            document: any;
+        }> = [];
+
+        // First pass: verify all documents exist and gather entries
+        for (const [docId, document] of entries) {
+            const key = this.createEntryKey(tableName, docId);
+            const existingEntry = this.btree.find(key);
+
+            if (existingEntry) {
+                existingEntries.push({
+                    docId,
+                    key,
+                    entry: existingEntry,
+                    document,
+                });
+
+                // Only clear cache for this specific document (selective invalidation)
+                this.readCache.delete(key);
+                this.memoryDocuments.delete(key);
+                this.memoryBTreeUpdates.delete(key);
+            }
+        }
+
+        if (existingEntries.length === 0) return 0;
+
+        // Use different strategies based on update size
+        if (existingEntries.length >= 50) {
+            // Large batch: Use true bulk operations with write batching
+            updatedCount = this.performBulkUpdate(existingEntries);
+        } else {
+            // Medium batch: Use memory-optimized writes with aggressive batching
+            for (const { docId, document } of existingEntries) {
+                this.writeDocumentMemoryOptimized(tableName, docId, document);
+                updatedCount++;
+            }
+
+            // Force immediate flush for medium batches to ensure consistency
+            this.flushMemoryBTreeUpdates();
+            this.flushMemoryDocuments();
+        }
+
+        return updatedCount;
+    }
+
+    private performBulkUpdate(
+        entries: Array<{
+            docId: string;
+            key: string;
+            entry: BTreeEntry;
+            document: any;
+        }>
+    ): number {
+        const btreeUpdates: BTreeEntry[] = [];
+        const writeOperations: PendingWrite[] = [];
+        let updatedCount = 0;
+
+        // Pre-serialize all documents for better performance
+        const serializedData = new Map<string, Buffer>();
+        for (const { key, document } of entries) {
+            try {
+                const data = Buffer.from(MessagePackUtil.encode(document));
+                serializedData.set(key, data);
+            } catch (error) {
+                console.warn(`Failed to serialize document ${key}:`, error);
+                continue;
+            }
+        }
+
+        // Allocate space for all updates at once
+        for (const { key, document } of entries) {
+            const data = serializedData.get(key);
+            if (!data) continue;
+
+            const offset = this.allocateDocumentSpace(data.length);
+
+            // Prepare write operation
+            writeOperations.push({
+                offset,
+                data,
+                length: data.length,
+            });
+
+            // Prepare B-tree update
+            btreeUpdates.push({
+                key,
+                offset,
+                length: data.length,
+            });
+
+            updatedCount++;
+        }
+
+        // Batch all writes (sorted by offset for optimal I/O)
+        writeOperations.sort((a, b) => a.offset - b.offset);
+        for (const write of writeOperations) {
+            this.scheduleBatchWrite(write.offset, write.data);
+        }
+
+        // Bulk update B-tree
+        this.btree.bulkInsert(btreeUpdates);
+
+        // Update header
+        const newRootOffset = this.btree.getRootOffset();
+        if (newRootOffset !== this.header.rootNodeOffset) {
+            this.header.rootNodeOffset = newRootOffset;
+            this.headerDirty = true;
+        }
+
+        // Force flush for consistency
+        this.flushBatchWrites();
+
+        return updatedCount;
     }
 }

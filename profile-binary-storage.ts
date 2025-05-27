@@ -1,5 +1,5 @@
-import { BinaryStorage } from '../src/storage/BinaryStorage';
-import { Table } from '../src/core/Table';
+import { BinaryStorage } from './src/storage/BinaryStorage';
+import { Table } from './src/core/Table';
 
 interface TestUser {
     name: string;
